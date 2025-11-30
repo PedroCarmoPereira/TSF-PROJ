@@ -1,5 +1,7 @@
 import os
+import numpy as np
 import pandas as pd
+from statsmodels.tsa.stattools import adfuller, kpss
 
 DATA_DIR = 'data'
 PREC_FILE = 'prec-Mainland-raw.csv'
@@ -40,4 +42,19 @@ def load_data():
     full_data['tdiff'] = full_data['tmax'] - full_data['tmin']
 
     selected_data = full_data[full_data['date'].between(DATA_START, DATA_END)]
+    selected_data['log_diff'] = np.log(selected_data['tdiff'])
     return selected_data
+
+def check_stationarity(timeseries):
+    adf_val = adfuller(timeseries, regression='ct', autolag='AIC')
+    p_value = adf_val[1]
+    print(f'ADF Statistic: {adf_val[0]}')
+    print(f'p-value: {p_value}')
+    if p_value < 0.05:
+        print('Stationary')
+    kpss_val = kpss(timeseries, regression="ct", nlags="auto")
+    p_value = kpss_val[1]
+    print(f'KPSS Statistic: {kpss_val[0]}')
+    print(f'p-value: {p_value}')
+    if p_value > 0.05:
+        print('Stationary')
