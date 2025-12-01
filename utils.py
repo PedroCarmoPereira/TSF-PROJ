@@ -43,16 +43,17 @@ def load_data():
 
     selected_data = full_data[full_data['date'].between(DATA_START, DATA_END)]
     selected_data['log_diff'] = np.log(selected_data['tdiff'])
+    selected_data = selected_data.set_index('date', drop=False)
     return selected_data
 
-def check_stationarity(timeseries):
-    adf_val = adfuller(timeseries, regression='ct', autolag='AIC')
+def check_stationarity(timeseries, regression='ct'):
+    adf_val = adfuller(timeseries, regression=regression, autolag='AIC')
     p_value = adf_val[1]
     print(f'ADF Statistic: {adf_val[0]}')
     print(f'p-value: {p_value}')
     if p_value < 0.05:
         print('Stationary')
-    kpss_val = kpss(timeseries, regression="ct", nlags="auto")
+    kpss_val = kpss(timeseries, regression=regression, nlags="auto")
     p_value = kpss_val[1]
     print(f'KPSS Statistic: {kpss_val[0]}')
     print(f'p-value: {p_value}')
