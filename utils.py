@@ -43,6 +43,11 @@ def load_data():
 
     selected_data = full_data[full_data['date'].between(DATA_START, DATA_END)]
     selected_data['log_diff'] = np.log(selected_data['tdiff'])
+
+    selected_data['lagged_prec'] = selected_data['prec'].shift(1)
+    selected_data['lagged_tmed'] = selected_data['tmed'].shift(1)
+    selected_data['lagged_tmax'] = selected_data['tmed'].shift(1)
+    selected_data['lagged_tmin'] = selected_data['tmed'].shift(1)
     selected_data = selected_data.set_index('date', drop=False)
     return selected_data
 
