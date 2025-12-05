@@ -2,6 +2,8 @@ import os
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.stattools import adfuller, kpss
+from itertools import product
+from statsmodels.tsa.stattools import acf, pacf
 
 DATA_DIR = 'data'
 PREC_FILE = 'prec-Mainland-raw.csv'
@@ -64,3 +66,123 @@ def check_stationarity(timeseries, regression='ct'):
     print(f'p-value: {p_value}')
     if p_value > 0.05:
         print('Stationary')
+
+def sarima_candidates_from_acf(
+    y,
+    m=None,          # seasonal period, e.g. 12 for monthly data. If None -> no seasonal part.
+    max_lag=None,    # max lag for ACF/PACF
+    max_p=3,
+    max_q=3,
+    max_P=2,
+    max_Q=2,
+    d=0,
+    D=0,
+    alpha=0.05,
+):
+    """
+    Suggest SARIMA(p,d,q)(P,D,Q,m) candidates based on ACF/PACF.
+
+    Parameters
+    ----------
+    y : array-like
+        1D time series (already differenced if needed).
+    m : int or None
+        Seasonal period (e.g. 12 for monthly). If None, no seasonal part is suggested.
+    max_lag : int or None
+        Maximum lag for ACF/PACF. If None, uses min(40, len(y)//2).
+    max_p, max_q : int
+        Maximum non-seasonal AR/MA order to consider.
+    max_P, max_Q : int
+        Maximum seasonal AR/MA order to consider.
+    d, D : int
+        Already-used non-seasonal and seasonal differencing orders.
+        (You said your series are stationary, so d=0, D=0 is fine.)
+    alpha : float
+        Significance level for ACF/PACF cut-off (default 0.05, ~95% bounds).
+
+    Returns
+    -------
+    result : dict
+        {
+          "acf": np.ndarray,
+          "pacf": np.ndarray,
+          "crit": float,                  # significance threshold
+          "p_candidates": list[int],
+          "q_candidates": list[int],
+          "P_candidates": list[int],
+          "Q_candidates": list[int],
+          "candidates": list[tuple]       # (p, d, q, P, D, Q, m)
+        }
+    """
+    y = np.asarray(y)
+    n = len(y)
+
+    if max_lag is None:
+        max_lag = min(40, n // 2)
+
+    # --- 1. Compute ACF and PACF ---
+    acf_vals = acf(y, nlags=max_lag, fft=True)
+    pacf_vals = pacf(y, nlags=max_lag, method="ywm")
+
+    # approximate 95% significance bounds: ±1.96 / sqrt(n)
+    crit = 1.96 / np.sqrt(n)
+
+    # --- 2. Non-seasonal candidates (p, q) ---
+
+    # p ~ AR terms from PACF at small lags
+    p_candidates = [
+        p for p in range(0, max_p + 1)
+        if p == 0 or abs(pacf_vals[p]) > crit
+    ]
+    # keep only the first few to avoid explosion
+    if not p_candidates:
+        p_candidates = [0, 1]
+    p_candidates = sorted(set(p_candidates))[:3]
+
+    # q ~ MA terms from ACF at small lags
+    q_candidates = [
+        q for q in range(0, max_q + 1)
+        if q == 0 or abs(acf_vals[q]) > crit
+    ]
+    if not q_candidates:
+        q_candidates = [0, 1]
+    q_candidates = sorted(set(q_candidates))[:3]
+
+    # --- 3. Seasonal candidates (P, Q) at multiples of m ---
+
+    P_candidates = [0]
+    Q_candidates = [0]
+
+    if m is not None and m > 1:
+        seasonal_lags = [k for k in range(m, max_lag + 1, m)]
+
+        # P from PACF at seasonal lags
+        P_candidates = [0]
+        for k in seasonal_lags:
+            if abs(pacf_vals[k]) > crit and len(P_candidates) <= max_P:
+                P_candidates.append(len(P_candidates))  # 1, 2, ...
+        P_candidates = sorted(set(P_candidates))
+
+        # Q from ACF at seasonal lags
+        Q_candidates = [0]
+        for k in seasonal_lags:
+            if abs(acf_vals[k]) > crit and len(Q_candidates) <= max_Q:
+                Q_candidates.append(len(Q_candidates))
+        Q_candidates = sorted(set(Q_candidates))
+
+    # --- 4. Build candidate list ---
+
+    candidates = []
+    for p, q, P, Q in product(p_candidates, q_candidates, P_candidates, Q_candidates):
+        candidates.append((p, d, q, P, D, Q, m or 0))
+
+    return {
+        "acf": acf_vals,
+        "pacf": pacf_vals,
+        "crit": crit,
+        "p_candidates": p_candidates,
+        "q_candidates": q_candidates,
+        "P_candidates": P_candidates,
+        "Q_candidates": Q_candidates,
+        "candidates": candidates,
+    }
