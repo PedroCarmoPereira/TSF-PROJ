@@ -91,8 +91,8 @@ def lag_plot_grid(ts, ys=None, lags=12, title="Lag Plots"):
 
     plt.tight_layout()
     plt.show()
-
-def plot_acfs(df, col):
-    plot_acf(df[col])
-    plot_pacf(df[col])
+    
+def plot_acfs(df, col, lags=36):
+    plot_acf(df[col], lags=lags)
+    plot_pacf(df[col], lags=lags)
     plt.show()

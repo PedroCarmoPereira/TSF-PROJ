@@ -67,17 +67,23 @@ def check_stationarity(timeseries, regression='ct'):
     if p_value > 0.05:
         print('Stationary')
 
+import numpy as np
+from itertools import product
+from statsmodels.tsa.stattools import acf, pacf
+
+
 def sarima_candidates_from_acf(
     y,
     m=None,          # seasonal period, e.g. 12 for monthly data. If None -> no seasonal part.
     max_lag=None,    # max lag for ACF/PACF
     max_p=3,
     max_q=3,
-    max_P=2,
-    max_Q=2,
+    max_P=1,
+    max_Q=1,
     d=0,
     D=0,
     alpha=0.05,
+    max_short_lag=5,  # how far to look for non-seasonal p,q
 ):
     """
     Suggest SARIMA(p,d,q)(P,D,Q,m) candidates based on ACF/PACF.
@@ -87,18 +93,19 @@ def sarima_candidates_from_acf(
     y : array-like
         1D time series (already differenced if needed).
     m : int or None
-        Seasonal period (e.g. 12 for monthly). If None, no seasonal part is suggested.
+        Seasonal period (e.g. 12 for monthly data). If None, no seasonal part is suggested.
     max_lag : int or None
         Maximum lag for ACF/PACF. If None, uses min(40, len(y)//2).
     max_p, max_q : int
-        Maximum non-seasonal AR/MA order to consider.
+        Maximum non-seasonal AR/MA order to consider (upper bounds, but we also cap by max_short_lag and m-1).
     max_P, max_Q : int
-        Maximum seasonal AR/MA order to consider.
+        Maximum seasonal AR/MA order to consider. In this implementation we only use 0 or 1 (textbook Box–Jenkins).
     d, D : int
         Already-used non-seasonal and seasonal differencing orders.
-        (You said your series are stationary, so d=0, D=0 is fine.)
     alpha : float
         Significance level for ACF/PACF cut-off (default 0.05, ~95% bounds).
+    max_short_lag : int
+        Maximum lag to look at for non-seasonal dynamics. Typically 3–5 is enough.
 
     Returns
     -------
@@ -106,12 +113,12 @@ def sarima_candidates_from_acf(
         {
           "acf": np.ndarray,
           "pacf": np.ndarray,
-          "crit": float,                  # significance threshold
+          "crit": float,
           "p_candidates": list[int],
           "q_candidates": list[int],
           "P_candidates": list[int],
           "Q_candidates": list[int],
-          "candidates": list[tuple]       # (p, d, q, P, D, Q, m)
+          "candidates": list[tuple]   # (p, d, q, P, D, Q, m)
         }
     """
     y = np.asarray(y)
@@ -129,52 +136,67 @@ def sarima_candidates_from_acf(
 
     # --- 2. Non-seasonal candidates (p, q) ---
 
+    # limit how far we look for non-seasonal structure
+    # and never let q reach the seasonal lag m
+    max_p_lag = min(max_p, max_short_lag)
+    if m is not None and m > 1:
+        max_q_lag = min(max_q, max_short_lag, m - 1)
+    else:
+        max_q_lag = min(max_q, max_short_lag)
+
     # p ~ AR terms from PACF at small lags
-    p_candidates = [
-        p for p in range(0, max_p + 1)
-        if p == 0 or abs(pacf_vals[p]) > crit
-    ]
-    # keep only the first few to avoid explosion
-    if not p_candidates:
-        p_candidates = [0, 1]
-    p_candidates = sorted(set(p_candidates))[:3]
+    p_candidates = [0]
+    for k in range(1, max_p_lag + 1):
+        if abs(pacf_vals[k]) > crit:
+            p_candidates.append(k)
+    p_candidates = sorted(set(p_candidates))
+    if len(p_candidates) == 1:  # only [0]
+        p_candidates.append(1)  # at least allow AR(1)
+    # optionally cap how many we keep
+    p_candidates = p_candidates[:3]
 
     # q ~ MA terms from ACF at small lags
-    q_candidates = [
-        q for q in range(0, max_q + 1)
-        if q == 0 or abs(acf_vals[q]) > crit
-    ]
-    if not q_candidates:
-        q_candidates = [0, 1]
-    q_candidates = sorted(set(q_candidates))[:3]
+    q_candidates = [0]
+    for k in range(1, max_q_lag + 1):
+        if abs(acf_vals[k]) > crit:
+            q_candidates.append(k)
+    q_candidates = sorted(set(q_candidates))
+    if len(q_candidates) == 1:  # only [0]
+        q_candidates.append(1)  # at least allow MA(1)
+    q_candidates = q_candidates[:3]
 
-    # --- 3. Seasonal candidates (P, Q) at multiples of m ---
+    # --- 3. Seasonal candidates (P, Q) ---
 
     P_candidates = [0]
     Q_candidates = [0]
 
-    if m is not None and m > 1:
-        seasonal_lags = [k for k in range(m, max_lag + 1, m)]
+    if m is not None and m > 1 and m <= max_lag:
+        # how many seasonal lags we can even look at (m, 2m, 3m, ...)
+        max_seasonal_k = max_lag // m
 
-        # P from PACF at seasonal lags
-        P_candidates = [0]
-        for k in seasonal_lags:
-            if abs(pacf_vals[k]) > crit and len(P_candidates) <= max_P:
-                P_candidates.append(len(P_candidates))  # 1, 2, ...
-        P_candidates = sorted(set(P_candidates))
+        # P from PACF at seasonal lags: m, 2m, 3m, ...
+        for j in range(1, min(max_P, max_seasonal_k) + 1):
+            lag = j * m
+            if abs(pacf_vals[lag]) > crit:
+                P_candidates.append(j)
 
-        # Q from ACF at seasonal lags
-        Q_candidates = [0]
-        for k in seasonal_lags:
-            if abs(acf_vals[k]) > crit and len(Q_candidates) <= max_Q:
-                Q_candidates.append(len(Q_candidates))
-        Q_candidates = sorted(set(Q_candidates))
+        # Q from ACF at seasonal lags: m, 2m, 3m, ...
+        for j in range(1, min(max_Q, max_seasonal_k) + 1):
+            lag = j * m
+            if abs(acf_vals[lag]) > crit:
+                Q_candidates.append(j)
 
+    P_candidates = sorted(set(P_candidates))
+    Q_candidates = sorted(set(Q_candidates))
     # --- 4. Build candidate list ---
 
     candidates = []
+    s = m or 0
     for p, q, P, Q in product(p_candidates, q_candidates, P_candidates, Q_candidates):
-        candidates.append((p, d, q, P, D, Q, m or 0))
+        # Avoid invalid MA overlap: if Q>0, don't let q >= s (non-seasonal MA up to seasonal lag)
+        if s > 0 and Q > 0 and q >= s:
+            continue
+        candidates.append((p, d, q, P, D, Q, s))
 
     return {
         "acf": acf_vals,
@@ -185,4 +207,5 @@ def sarima_candidates_from_acf(
         "P_candidates": P_candidates,
         "Q_candidates": Q_candidates,
         "candidates": candidates,
+        "max_lag": max_lag
     }
