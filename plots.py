@@ -96,3 +96,14 @@ def plot_acfs(df, col):
     plot_acf(df[col])
     plot_pacf(df[col])
     plt.show()
+
+def plot_lb_test(lb_results):
+    plt.figure(figsize=(12, 5))
+    plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
+    plt.axhline(0.05, linestyle='--', label='Significance level (0.05)')
+    plt.xlabel('Forecast window end date')
+    plt.ylabel('Ljung–Box p-value (lag 12)')
+    plt.title('Rolling Ljung–Box Test on Forecast Residuals')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
