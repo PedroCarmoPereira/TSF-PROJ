@@ -83,7 +83,7 @@ def sarima_candidates_from_acf(
     d=0,
     D=0,
     alpha=0.05,
-    max_short_lag=5,  # how far to look for non-seasonal p,q
+    max_short_lag=12,  # how far to look for non-seasonal p,q
 ):
     """
     Suggest SARIMA(p,d,q)(P,D,Q,m) candidates based on ACF/PACF.

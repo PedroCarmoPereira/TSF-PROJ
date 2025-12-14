@@ -334,7 +334,7 @@ def sarimax_rolling_cv(
         )
 
     n_folds = max_train_start // step + 1
-
+    print(f"Running rolling CV with {n_folds} folds...")
     if verbose:
         print(f"Total length: {n}")
         print(f"Train window size: {train_size}")
