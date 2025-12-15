@@ -9,8 +9,10 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
+from statsmodels.stats.diagnostic import acorr_ljungbox
 
 from statsmodels.graphics.tsaplots import plot_acf
+from plots import * 
 
 def sarimax_experiment(df, target, p, d, q, P, D, Q, s, forecast_window=12, no_windows=10, exog=None):
     train, test = df[target][no_windows*-forecast_window:-forecast_window], df[target][-forecast_window:]
@@ -302,7 +304,9 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
     # Initialize storage
     all_forecasts = []
     all_actuals = []
+    all_residuals = []
     split_metrics = []
+    lb_results = []
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Perform cross-validation
@@ -325,6 +329,21 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
         all_forecasts.extend(forecast)
         all_actuals.extend(test)
         
+        residuals = [a - f for a, f in zip(test, forecast)]
+        all_residuals.extend(residuals)
+        
+        lb = acorr_ljungbox(
+            residuals,
+            lags=[12],
+            return_df=True
+        )  
+        lb_results.append({
+            'ds': df.index[test_end_idx - 1],
+            'lb_stat': lb['lb_stat'].iloc[0],
+            'p_value': lb['lb_pvalue'].iloc[0]
+        })
+
+
         train_start_date = df.index[train_start_idx]
         train_end_date = df.index[train_end_idx - 1]
         test_start_date = df.index[train_end_idx]
@@ -366,7 +385,7 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
     
     # Visualize
     _plot_lstm_cv_results(df, target, split_metrics, all_forecasts, 
-                          all_actuals, forecast_months)
+                          all_actuals, forecast_months, residuals, pd.DataFrame(lb_results))
     
     return {
         'split_metrics': pd.DataFrame(split_metrics),
@@ -375,11 +394,13 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
         'avg_rmse': avg_rmse,
         'avg_mae': avg_mae,
         'forecasts': all_forecasts,
-        'actuals': all_actuals
+        'actuals': all_actuals,
+        'residuals': all_residuals,
+        'lb_results': lb_results
     }
 
 
-def _plot_lstm_cv_results(df, target, split_metrics, forecasts, actuals, forecast_months):
+def _plot_lstm_cv_results(df, target, split_metrics, forecasts, actuals, forecast_months, residuals, lb):
     """Helper function to visualize LSTM cross-validation results."""
     
     forecast_indices = []
@@ -402,5 +423,18 @@ def _plot_lstm_cv_results(df, target, split_metrics, forecasts, actuals, forecas
     # Plot 3: Metrics across splits
     residuals = [a - f for a, f in zip(actuals, forecasts)]
     plot_acf(pd.Series(residuals))
+
+    plot_lb_test(lb)
     plt.tight_layout()
+    plt.show()
+
+def plot_lb_test(lb_results):
+    plt.figure(figsize=(12, 5))
+    plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
+    plt.axhline(0.05, linestyle='--', label='Significance level (0.05)')
+    plt.xlabel('Forecast window end date')
+    plt.ylabel('Ljung–Box p-value (lag 12)')
+    plt.title('Rolling Ljung–Box Test on Forecast Residuals')
+    plt.legend()
+    plt.grid(True)
     plt.show()
