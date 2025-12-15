@@ -9,6 +9,9 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
+
+from statsmodels.graphics.tsaplots import plot_acf
+
 def sarimax_experiment(df, target, p, d, q, P, D, Q, s, forecast_window=12, no_windows=10, exog=None):
     train, test = df[target][no_windows*-forecast_window:-forecast_window], df[target][-forecast_window:]
 
@@ -92,7 +95,7 @@ class TimeSeriesDataset(Dataset):
         return torch.FloatTensor(x), torch.FloatTensor([y])
 
 def lstm_experiment(df, target, forecast_window=12, no_windows=10, 
-                   seq_length=12, epochs=100, batch_size=32, lr=0.001, exog=None, plot=False):
+                   seq_length=12, epochs=100, batch_size=32, lr=0.001, hidden_size=100, num_layers=1,  exog=None, plot=False):
     """
     LSTM time series forecasting experiment
     
@@ -108,9 +111,6 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
         exog: List of exogenous variable column names
     """
     # Split data
-    print(target)
-    print(no_windows)
-    print(forecast_window)
     train = df[target][no_windows*-forecast_window:-forecast_window].values
     test = df[target][-forecast_window:].values
     
@@ -137,7 +137,7 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
     
     # Initialize model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = LSTM(input_size=input_size, hidden_size=100, num_layers=1).to(device)
+    model = LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers).to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
@@ -237,8 +237,6 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
         plt.show()
     
     return model, scaler, exog_scaler, forecast, rmse, mae, test
-
-
 
 def lstm_time_series_cv(df, target, train_years=9, forecast_months=12, 
                         test_start_year=2010, exog=None, seq_length=12, 
@@ -352,7 +350,9 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
     overall_rmse = np.sqrt(mean_squared_error(all_actuals, all_forecasts))
     overall_mae = mean_absolute_error(all_actuals, all_forecasts)
     avg_rmse = np.mean([m['rmse'] for m in split_metrics])
+    avg_rmse_std = np.std([m['rmse'] for m in split_metrics])
     avg_mae = np.mean([m['mae'] for m in split_metrics])
+    avg_mae_std = np.std([m['mae'] for m in split_metrics])
     
     if verbose:
         print(f"\n{'='*70}")
@@ -360,13 +360,13 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
         print(f"RMSE: {overall_rmse:.4f}")
         print(f"MAE: {overall_mae:.4f}")
         print(f"\nAVERAGE METRICS (across splits):")
-        print(f"Average RMSE: {avg_rmse:.4f}")
-        print(f"Average MAE: {avg_mae:.4f}")
+        print(f"Average RMSE: {avg_rmse:.4f}, STD:  {avg_rmse_std:.4f}")
+        print(f"Average MAE: {avg_mae:.4f}, STD:  {avg_mae_std:.4f}")
         print(f"{'='*70}\n")
     
     # Visualize
     _plot_lstm_cv_results(df, target, split_metrics, all_forecasts, 
-                          all_actuals, train_months, forecast_months)
+                          all_actuals, forecast_months)
     
     return {
         'split_metrics': pd.DataFrame(split_metrics),
@@ -379,32 +379,9 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
     }
 
 
-def _plot_lstm_cv_results(df, target, split_metrics, forecasts, actuals, 
-                          train_months, forecast_months):
+def _plot_lstm_cv_results(df, target, split_metrics, forecasts, actuals, forecast_months):
     """Helper function to visualize LSTM cross-validation results."""
     
-    fig, axes = plt.subplots(3, 1, figsize=(14, 12))
-    
-    # Plot 1: Full timeline with CV splits
-    ax1 = axes[0]
-    ax1.plot(df.index, df[target], label='Full Data', alpha=0.7, color='blue')
-    
-    for i, split_info in enumerate(split_metrics):
-        test_start = split_info['test_start']
-        test_end = split_info['test_end']
-        ax1.axvspan(test_start, test_end, alpha=0.2, color='red', 
-                   label='Test Period' if i == 0 else '')
-        ax1.axvline(split_info['train_end'], color='green', linestyle='--', 
-                   alpha=0.5, label='Train End' if i == 0 else '')
-    
-    ax1.set_title(f'LSTM Time Series CV ({train_months//12}yr train, {forecast_months}mo forecast)')
-    ax1.set_xlabel('Date')
-    ax1.set_ylabel(target)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    # Plot 2: Forecast vs Actual
-    ax2 = axes[1]
     forecast_indices = []
     for split_info in split_metrics:
         test_start = split_info['test_start']
@@ -412,28 +389,18 @@ def _plot_lstm_cv_results(df, target, split_metrics, forecasts, actuals,
         indices = df.loc[test_start:test_end].index
         forecast_indices.extend(indices[:forecast_months])
     
-    ax2.plot(forecast_indices, actuals, label='Actual', marker='o', 
-            markersize=3, linewidth=1.5, color='blue')
-    ax2.plot(forecast_indices, forecasts, label='Forecast', marker='x', 
-            markersize=3, linewidth=1.5, color='red', alpha=0.7)
-    ax2.set_title('LSTM Forecast vs Actual (All Test Periods)')
-    ax2.set_xlabel('Date')
-    ax2.set_ylabel(target)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
+    plt.plot(forecast_indices, actuals, label='Actual', marker='o', 
+            markersize=3, linewidth=1.5)
+    plt.plot(forecast_indices, forecasts, label='Forecast', marker='x', 
+            markersize=3, linewidth=1.5, alpha=0.7)
+    plt.title('LSTM Forecast vs Actual (All Test Periods)')
+    plt.xlabel('Date')
+    plt.ylabel(target)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     
     # Plot 3: Metrics across splits
-    ax3 = axes[2]
-    metrics_df = pd.DataFrame(split_metrics)
-    ax3.plot(metrics_df['split'], metrics_df['rmse'], marker='o', 
-            label='RMSE', linewidth=2)
-    ax3.plot(metrics_df['split'], metrics_df['mae'], marker='s', 
-            label='MAE', linewidth=2)
-    ax3.set_xlabel('Split Number')
-    ax3.set_ylabel('Error')
-    ax3.set_title('LSTM Forecast Errors Across CV Splits')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
-    
+    residuals = [a - f for a, f in zip(actuals, forecasts)]
+    plot_acf(pd.Series(residuals))
     plt.tight_layout()
     plt.show()
