@@ -1,11 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-
+import pandas as pd
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf, month_plot
 from statsmodels.nonparametric.smoothers_lowess import lowess
-
-
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from utils import get_residuals_any
 def plot_time_series(df, date_col, var_col, ma_window=None):
     # 1. Set up the plot
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -96,3 +96,81 @@ def plot_acfs(df, col, lags=36):
     plot_acf(df[col], lags=lags, bartlett_confint=False)
     plot_pacf(df[col], lags=lags)
     plt.show()
+
+
+def plot_lb_test(lb_results, rolling_window):
+    plt.figure(figsize=(12, 5))
+    if rolling_window:
+        plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
+    else:
+        plt.plot(lb_results['lb_stat'], lb_results['lb_pvalue'], marker='o')
+    plt.axhline(0.05, linestyle='--', label='Significance level (0.05)')
+    plt.xlabel('Forecast window end date')
+    plt.ylabel('Ljung–Box p-value (lag 12)')
+    plt.title('Rolling Ljung–Box Test on Forecast Residuals')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+def plot_sarimax_results(
+    train,
+    test,
+    forecast,
+    results,
+    order,
+    seasonal_order,
+    rmse,
+    mae,
+    rolling_window=False
+):
+    """
+    Plot forecast vs actuals and individual SARIMAX diagnostics.
+    """
+
+    # === Forecast vs Actual ===
+    plt.figure(figsize=(12, 6))
+    plt.plot(train.index, train, label="Train")
+    plt.plot(test.index, test, label="Actual Test")
+    plt.plot(test.index, forecast, label="Forecast", linestyle="--")
+    plt.legend()
+    plt.title(
+        f"SARIMA{order}{seasonal_order}\n"
+        f"RMSE={rmse:.4f}, MAE={mae:.4f}"
+    )
+    plt.grid(alpha=0.3)
+    plt.show()
+
+    # === Individual diagnostics ===
+    resid = get_residuals_any(results, train=train)
+
+    # 1. Standardized residuals
+    plt.figure(figsize=(10, 3))
+    plt.plot(resid)
+    plt.title("Standardized Residuals")
+    plt.grid(alpha=0.3)
+    plt.show()
+
+    # 2. Histogram + KDE
+    plt.figure(figsize=(6, 4))
+    plt.hist(resid, bins=30, density=True)
+    plt.title("Residual Distribution")
+    plt.grid(alpha=0.3)
+    plt.show()
+
+    # 3. QQ plot
+    from statsmodels.graphics.gofplots import qqplot
+    qqplot(resid, line="s")
+    plt.title("QQ Plot of Residuals")
+    plt.show()
+
+    # 4. ACF of residuals
+    from statsmodels.graphics.tsaplots import plot_acf
+    plot_acf(resid, lags=24)
+    plt.title("ACF of Residuals")
+    plt.show()
+
+    # 5. Ljung–Box test
+    from statsmodels.stats.diagnostic import acorr_ljungbox
+    lb = acorr_ljungbox(resid, lags=12, return_df=True)
+
+    plot_lb_test(lb, rolling_window)

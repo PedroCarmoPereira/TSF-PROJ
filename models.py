@@ -4,7 +4,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from pmdarima import auto_arima
 import pandas as pd
-
+from statsmodels.stats.diagnostic import acorr_ljungbox
+import plots # ensure plots.py is imported for plotting functions
 
 def sarimax_experiment(
     df,
@@ -14,12 +15,12 @@ def sarimax_experiment(
     forecast_window=12,
     no_windows=10,
     exog=None,
-    plot=True,
 ):
     """
     Fit one SARIMAX model, evaluate on last forecast_window points,
-    optionally plot, and RETURN metrics & fitted model.
+    and RETURN metrics & fitted model (no plotting).
     """
+
     # Train/test split
     train = df[target][no_windows * -forecast_window : -forecast_window]
     test = df[target][-forecast_window:]
@@ -29,37 +30,26 @@ def sarimax_experiment(
         exog_train = df[exog][no_windows * -forecast_window : -forecast_window]
         exog_test = df[exog][-forecast_window:]
 
-    # Fit on training data
-    model_train = SARIMAX(train, exog_train, order=(p, d, q), seasonal_order=(P, D, Q, s))
+    # Fit model
+    model_train = SARIMAX(
+        train,
+        exog=exog_train,
+        order=(p, d, q),
+        seasonal_order=(P, D, Q, s),
+    )
     results_train = model_train.fit(disp=False)
 
-    # Forecast on test period
-    forecast = results_train.forecast(exog=exog_test, steps=forecast_window)
+    # Forecast
+    forecast = results_train.forecast(
+        steps=forecast_window,
+        exog=exog_test
+    )
 
-    # Evaluate forecast accuracy
+    # Metrics
     rmse = np.sqrt(mean_squared_error(test, forecast))
     mae = mean_absolute_error(test, forecast)
 
-    if plot:
-        print(f"SARIMA({p},{d},{q})({P},{D},{Q},{s})")
-        print(f"RMSE: {rmse:.4f}")
-        print(f"MAE: {mae:.4f}")
-
-        plt.figure(figsize=(12, 6))
-        plt.plot(train.index, train, label="Train")
-        plt.plot(test.index, test, label="Actual Test")
-        plt.plot(test.index, forecast, label="Forecast", linestyle="--")
-        plt.legend()
-        plt.title("SARIMA Forecast vs Actual")
-        plt.show()
-
-        # Optional diagnostics
-        results_train.plot_diagnostics(figsize=(10, 8))
-        plt.show()
-
-    # IMPORTANT: return values so grid search can use them
-    return rmse, mae, results_train, forecast, test
-
+    return rmse, mae, results_train, forecast, test, train
 
 def sarimax_grid_search(
     df,
@@ -82,15 +72,14 @@ def sarimax_grid_search(
 
     for (p, d, q, P, D, Q, s) in candidates:
         try:
-            rmse, mae, results, forecast, test = sarimax_experiment(
+            rmse, mae, results, forecast, test, train = sarimax_experiment(
                 df=df,
                 target=target,
                 p=p, d=d, q=q,
                 P=P, D=D, Q=Q, s=s,
                 forecast_window=forecast_window,
                 no_windows=no_windows,
-                exog=exog,
-                plot=False,   # avoid spamming plots during grid search
+                exog=exog,   
             )
 
             record = {
@@ -119,6 +108,7 @@ def sarimax_grid_search(
                     "results": results,
                     "forecast": forecast,
                     "test": test,
+                    "train": train,
                 }
 
         except Exception as e:
@@ -140,29 +130,6 @@ def sarimax_grid_search(
 
     return best_info, scores_df
 
-import matplotlib.pyplot as plt
-
-def plot_best_sarimax(df, target, best_info, forecast_window=12, no_windows=10):
-    # reconstruct the train slice
-    train = df[target][no_windows * -forecast_window : -forecast_window]
-    test = best_info["test"]
-    forecast = best_info["forecast"]
-
-    plt.figure(figsize=(12, 6))
-    plt.plot(train.index, train, label="Train")
-    plt.plot(test.index, test, label="Actual Test")
-    plt.plot(test.index, forecast, label="Forecast (best model)", linestyle="--")
-    plt.legend()
-    plt.title(
-        f"Best SARIMA{best_info['order']}{best_info['seasonal_order']} "
-        f"RMSE={best_info['rmse']:.4f}, MAE={best_info['mae']:.4f}"
-    )
-    plt.show()
-
-    # diagnostics from fitted model
-    best_info["results"].plot_diagnostics(figsize=(10, 8))
-    plt.show()
-
 def auto_sarima_experiment(
     df,
     target,
@@ -174,7 +141,7 @@ def auto_sarima_experiment(
     max_P=2, max_Q=2,
     metric="rmse",
     trace=True,
-    plot=True,
+
 ):
     """
     Run AutoSARIMA and evaluate it on a train/test split exactly like sarimax_experiment.
@@ -239,25 +206,7 @@ def auto_sarima_experiment(
     print(f"RMSE:         {rmse:.4f}")
     print(f"MAE:          {mae:.4f}")
 
-    # --- Plot ---
-    if plot:
-        plt.figure(figsize=(12, 6))
-        plt.plot(train.index, train, label="Train")
-        plt.plot(test.index, test, label="Actual Test")
-        plt.plot(test.index, forecast, label="AutoSARIMA Forecast", linestyle="--")
-        plt.legend()
-        plt.title(f"AutoSARIMA{order}{seasonal_order}")
-        plt.show()
-
-    return {
-        "order": order,
-        "seasonal_order": seasonal_order,
-        "rmse": rmse,
-        "mae": mae,
-        "model": model,
-        "forecast": forecast,
-        "test": test,
-    }
+    return rmse, mae, model, forecast, test, train, order , seasonal_order
 
 
 def sarimax_rolling_cv(
@@ -509,128 +458,3 @@ def select_best_sarima_cv(
         print("Best mean MAE:    ", best_info["mae_mean"])
 
     return best_info, scores_df
-
-
-def plot_best_sarimax_final(
-    df,
-    target,
-    best_info,
-    forecast_window=12,
-    train_size=None,
-    exog=None,
-):
-    """
-    Fit the best SARIMA model on a defined training window and plot
-    its forecast vs the last `forecast_window` observations.
-
-    Split:
-      - If train_size is None:
-          * train = all data except last forecast_window points
-          * test  = last forecast_window points
-      - If train_size is given:
-          * train = last `train_size` points BEFORE the test window
-          * test  = last forecast_window points
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-    target : str
-        Target column name.
-    best_info : dict
-        Output from select_best_sarima_cv, must contain:
-          - "order"
-          - "seasonal_order"
-          - "rmse_mean", "mae_mean" (for display only)
-    forecast_window : int
-        Number of steps to forecast (and size of test window).
-    train_size : int or None
-        Number of time steps to use for training.
-        If None, use all available data before the test window.
-    exog : list[str] or None
-        List of exogenous column names or None.
-    """
-    y = df[target]
-    n = len(y)
-    h = forecast_window
-
-    if n <= h:
-        raise ValueError(
-            f"Series too short: n={n}, forecast_window={h}. Need n > h."
-        )
-
-    # Define test window: last h points
-    test = y.iloc[-h:]
-
-    # Define train window
-    if train_size is None:
-        # Use everything before the test window
-        train = y.iloc[:-h]
-        train_start_idx = train.index[0]
-    else:
-        if train_size + h > n:
-            raise ValueError(
-                f"train_size + forecast_window = {train_size + h} exceeds series length n={n}."
-            )
-        train_end_pos = n - h        # exclusive position
-        train_start_pos = train_end_pos - train_size
-        train = y.iloc[train_start_pos:train_end_pos]
-        train_start_idx = train.index[0]
-
-    # Exogenous data if provided
-    if exog is not None:
-        exog_train = df[exog].loc[train.index]
-        exog_test = df[exog].loc[test.index]
-    else:
-        exog_train = exog_test = None
-
-    order = best_info["order"]
-    seasonal_order = best_info["seasonal_order"]
-
-    # Fit SARIMAX on train window
-    model = SARIMAX(
-        train,
-        exog=exog_train,
-        order=order,
-        seasonal_order=seasonal_order,
-        enforce_stationarity=False,
-        enforce_invertibility=False,
-    )
-    results = model.fit(disp=False)
-
-    # Forecast h steps ahead
-    fc = results.forecast(steps=h, exog=exog_test)
-    fc = pd.Series(fc, index=test.index)
-
-    # Metrics on this hold-out
-    mse = mean_squared_error(test, fc)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(test, fc)
-
-    # Plot
-    plt.figure(figsize=(12, 6))
-    plt.plot(train.index, train, label="Train")
-    plt.plot(test.index, test, label="Test (hold-out)")
-    plt.plot(fc.index, fc, label="Forecast", linestyle="--")
-    plt.legend()
-    plt.title(
-        f"SARIMA{order}{seasonal_order}\n"
-        f"CV mean RMSE={best_info['rmse_mean']:.4f}, "
-        f"CV mean MAE={best_info['mae_mean']:.4f}\n"
-        f"Hold-out RMSE={rmse:.4f}, MAE={mae:.4f}"
-    )
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-    # Optionally, diagnostics for this final fit
-    results.plot_diagnostics(figsize=(10, 8))
-    plt.tight_layout()
-    plt.show()
-
-    return {
-        "results": results,
-        "forecast": fc,
-        "test": test,
-        "rmse": rmse,
-        "mae": mae,
-    }

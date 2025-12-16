@@ -1,9 +1,9 @@
 import os
 import numpy as np
 import pandas as pd
-from statsmodels.tsa.stattools import adfuller, kpss
+from statsmodels.tsa.stattools import acf, pacf, adfuller, kpss
 from itertools import product
-from statsmodels.tsa.stattools import acf, pacf
+from arch.unitroot import PhillipsPerron
 
 DATA_DIR = 'data'
 PREC_FILE = 'prec-Mainland-raw.csv'
@@ -53,20 +53,28 @@ def load_data():
     selected_data = selected_data.set_index('date', drop=False)
     return selected_data
 
-def check_stationarity(timeseries, regression='ct'):
-    adf_val = adfuller(timeseries, regression=regression, autolag='AIC')
-    p_value = adf_val[1]
-    print(f'ADF Statistic: {adf_val[0]}')
-    print(f'p-value: {p_value}')
-    if p_value < 0.05:
-        print('Stationary')
-    kpss_val = kpss(timeseries, regression=regression, nlags="auto")
-    p_value = kpss_val[1]
-    print(f'KPSS Statistic: {kpss_val[0]}')
-    print(f'p-value: {p_value}')
-    if p_value > 0.05:
-        print('Stationary')
+from statsmodels.tsa.stattools import adfuller, kpss
+from arch.unitroot import PhillipsPerron
 
+def check_stationarity(timeseries, regression='ct', alpha=0.05):
+
+    print("=== Augmented Dickey-Fuller (ADF) ===")
+    adf_val = adfuller(timeseries, regression=regression, autolag='AIC')
+    print(f"ADF Statistic: {adf_val[0]:.4f}")
+    print(f"p-value: {adf_val[1]:.4f}")
+    print("Result:", "Stationary" if adf_val[1] < alpha else "Non-stationary")
+
+    print("\n=== Phillips–Perron (PP) ===")
+    pp = PhillipsPerron(timeseries, trend=regression)
+    print(f"PP Statistic: {pp.stat:.4f}")
+    print(f"p-value: {pp.pvalue:.4f}")
+    print("Result:", "Stationary" if pp.pvalue < alpha else "Non-stationary")
+
+    print("\n=== KPSS ===")
+    kpss_stat, kpss_p, _, _ = kpss(timeseries, regression=regression, nlags="auto")
+    print(f"KPSS Statistic: {kpss_stat:.4f}")
+    print(f"p-value: {kpss_p:.4f}")
+    print("Result:", "Stationary" if kpss_p > alpha else "Non-stationary")
 import numpy as np
 from itertools import product
 from statsmodels.tsa.stattools import acf, pacf
@@ -126,7 +134,9 @@ def sarima_candidates_from_acf(
 
     if max_lag is None:
         max_lag = min(40, n // 2)
-
+    print("n:", len(y))
+    print("NaNs:", pd.Series(y).isna().sum())
+    print("var:", np.var(pd.Series(y).dropna()))
     # --- 1. Compute ACF and PACF ---
     acf_vals = acf(y, nlags=max_lag, fft=True)
     pacf_vals = pacf(y, nlags=max_lag, method="ywm")
@@ -209,3 +219,37 @@ def sarima_candidates_from_acf(
         "candidates": candidates,
         "max_lag": max_lag
     }
+
+def get_residuals_any(results, train=None):
+    """
+    Return residuals as a clean numeric pd.Series for:
+    - statsmodels SARIMAXResultsWrapper
+    - pmdarima.arima.ARIMA
+    """
+    import numpy as np
+    import pandas as pd
+
+    # --- statsmodels SARIMAXResultsWrapper ---
+    if hasattr(results, "resid"):
+        r = results.resid
+        # if resid is a method, call it
+        if callable(r):
+            r = r()
+        try:
+            return pd.Series(r).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+        except Exception:
+            pass
+
+    # --- pmdarima ARIMA ---
+    # pmdarima provides resid() method in many versions
+    if hasattr(results, "resid") and callable(getattr(results, "resid")):
+        r = results.resid()
+        return pd.Series(r).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+
+    # Fallback: compute residuals manually if we have train
+    if train is not None and hasattr(results, "predict_in_sample"):
+        fitted = results.predict_in_sample()
+        r = pd.Series(train).iloc[-len(fitted):].to_numpy() - np.asarray(fitted)
+        return pd.Series(r).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+
+    raise TypeError("Could not extract residuals from results object.")
