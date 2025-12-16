@@ -97,7 +97,7 @@ class TimeSeriesDataset(Dataset):
         return torch.FloatTensor(x), torch.FloatTensor([y])
 
 def lstm_experiment(df, target, forecast_window=12, no_windows=10, 
-                   seq_length=12, epochs=100, batch_size=32, lr=0.001, hidden_size=100, num_layers=1,  exog=None, plot=False):
+                   seq_length=12, epochs=100, batch_size=32, lr=0.001, dropout=0.2, hidden_size=100, num_layers=1,  exog=None, plot=False):
     """
     LSTM time series forecasting experiment
     
@@ -139,7 +139,7 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
     
     # Initialize model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers).to(device)
+    model = LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout).to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
@@ -243,7 +243,7 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
 def lstm_time_series_cv(df, target, train_years=9, forecast_months=12, 
                         test_start_year=2010, exog=None, seq_length=12, 
                         epochs=100, batch_size=32, lr=0.001, 
-                        hidden_size=50, num_layers=1, verbose=True):
+                        hidden_size=50, num_layers=1, dropout=0.2, verbose=True, plot=False):
     """
     Perform time series cross-validation for LSTM models with exogenous variables.
     
@@ -324,7 +324,7 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
         
         df_split = df.iloc[train_start_idx: test_end_idx]
         
-        model, scaler, escaler, forecast, rmse, mae, test = lstm_experiment(df_split, target, forecast_window=forecast_months, no_windows=train_years+1, seq_length=seq_length, epochs=epochs, batch_size=batch_size, lr=lr, exog=exog, plot=False)
+        model, scaler, escaler, forecast, rmse, mae, test = lstm_experiment(df_split, target, hidden_size=hidden_size, dropout=dropout, num_layers=num_layers, forecast_window=forecast_months, no_windows=train_years+1, seq_length=seq_length, epochs=epochs, batch_size=batch_size, lr=lr, exog=exog, plot=False)
         # Store results
         all_forecasts.extend(forecast)
         all_actuals.extend(test)
@@ -384,9 +384,10 @@ def lstm_time_series_cv(df, target, train_years=9, forecast_months=12,
         print(f"{'='*70}\n")
     
     # Visualize
-    _plot_lstm_cv_results(df, target, split_metrics, all_forecasts, 
-                          all_actuals, forecast_months, residuals, pd.DataFrame(lb_results))
-    
+    if plot:
+        _plot_lstm_cv_results(df, target, split_metrics, all_forecasts, 
+                            all_actuals, forecast_months, residuals, pd.DataFrame(lb_results))
+        
     return {
         'split_metrics': pd.DataFrame(split_metrics),
         'overall_rmse': overall_rmse,
@@ -438,3 +439,348 @@ def plot_lb_test(lb_results):
     plt.legend()
     plt.grid(True)
     plt.show()
+
+import itertools
+
+import time
+
+def lstm_grid_search_cv(
+    df,
+    target,
+    train_years=9,
+    forecast_months=12,
+    test_start_year=2010,
+    seq_length=12,
+    epochs=100,
+    batch_size=32,
+    param_grid= None,
+    verbose= 1
+):
+    """
+    Perform grid search with time series cross-validation for LSTM models.
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with datetime index
+    target : str
+        Name of target column
+    train_years : int
+        Number of years to use for training
+    forecast_months : int
+        Number of months to forecast ahead
+    test_start_year : int
+        Year to start testing from
+    seq_length : int
+        Length of input sequences (lookback window)
+    epochs : int
+        Number of training epochs per split
+    batch_size : int
+        Batch size for training
+    param_grid : dict, optional
+        Dictionary with parameters names (str) as keys and lists of 
+        parameter settings to try as values. If None, uses default grid.
+        Possible keys:
+        - 'exog': list of lists of exogenous variable names
+        - 'lr': list of learning rates
+        - 'hidden_size': list of hidden sizes
+        - 'num_layers': list of number of layers
+        - 'dropout': list of dropout rates
+    verbose : int
+        Verbosity level (0=silent, 1=progress, 2=detailed)
+        
+    Returns:
+    --------
+    dict : Dictionary containing:
+        - 'results': DataFrame with all combinations and their metrics
+        - 'best_overall_params': Parameters for best model by overall RMSE
+        - 'best_overall_score': Best overall RMSE achieved
+        - 'best_overall_results': Full CV results for best overall model
+        - 'best_avg_params': Parameters for best model by average RMSE
+        - 'best_avg_score': Best average RMSE achieved
+        - 'best_avg_results': Full CV results for best average model
+        - 'best_last_fold_params': Parameters for best model on last fold
+        - 'best_last_fold_score': Best last fold RMSE achieved
+        - 'best_last_fold_results': Full CV results for best last fold model
+        
+    Example:
+    --------
+    param_grid = {
+        'exog': [
+            None,
+            ['lagged_tmed', 'lagged_tmin'],
+            ['lagged_tmed', 'lagged_tmin', 'lagged_prec', 'lagged_tmax']
+        ],
+        'lr': [0.001, 0.01],
+        'hidden_size': [50, 100],
+        'num_layers': [1, 2],
+        'dropout': [0.1, 0.2]
+    }
+    
+    results = lstm_grid_search_cv(
+        df=data,
+        target='tdiff',
+        train_years=8,
+        forecast_months=24,
+        test_start_year=1996,
+        param_grid=param_grid,
+        verbose=1
+    )
+    """
+    
+    # Default parameter grid if none provided
+    if param_grid is None:
+        param_grid = {
+            'exog': [None],
+            'lr': [0.001],
+            'hidden_size': [50],
+            'num_layers': [1],
+            'dropout': [0.2]
+        }
+    
+    # Ensure all required keys exist
+    default_params = {
+        'exog': [None],
+        'lr': [0.001],
+        'hidden_size': [50],
+        'num_layers': [1],
+        'dropout': [0.2]
+    }
+    
+    for key, default_val in default_params.items():
+        if key not in param_grid:
+            param_grid[key] = default_val
+    
+    # Generate all parameter combinations
+    keys = list(param_grid.keys())
+    values = [param_grid[k] for k in keys]
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    
+    total_combinations = len(param_combinations)
+    
+    if verbose >= 1:
+        print(f"{'='*80}")
+        print(f"LSTM GRID SEARCH CROSS-VALIDATION")
+        print(f"{'='*80}")
+        print(f"Target: {target}")
+        print(f"Training window: {train_years} years")
+        print(f"Forecast horizon: {forecast_months} months")
+        print(f"Sequence length: {seq_length} months")
+        print(f"Total parameter combinations: {total_combinations}")
+        print(f"\nParameter grid:")
+        for key, vals in param_grid.items():
+            print(f"  {key}: {vals}")
+        print(f"{'='*80}\n")
+    
+    # Store results for all combinations
+    results_list = []
+    best_overall_score = float('inf')
+    best_overall_params = None
+    best_overall_results = None
+    
+    best_avg_score = float('inf')
+    best_avg_params = None
+    best_avg_results = None
+    
+    best_last_fold_score = float('inf')
+    best_last_fold_params = None
+    best_last_fold_results = None
+    
+    # Try each parameter combination
+    for idx, params in enumerate(param_combinations, 1):
+        if verbose >= 1:
+            print(f"\n{'='*80}")
+            print(f"Combination {idx}/{total_combinations}")
+            print(f"{'='*80}")
+            print(f"Parameters:")
+            for key, val in params.items():
+                if key == 'exog' and val is not None:
+                    print(f"  {key}: {val}")
+                elif key != 'exog':
+                    print(f"  {key}: {val}")
+            print(f"{'='*80}\n")
+        
+        try:
+            # Run cross-validation with current parameters
+            start_time = time.time()
+            
+            cv_results = lstm_time_series_cv(
+                df=df,
+                target=target,
+                train_years=train_years,
+                forecast_months=forecast_months,
+                test_start_year=test_start_year,
+                exog=params['exog'],
+                seq_length=seq_length,
+                epochs=epochs,
+                batch_size=batch_size,
+                lr=params['lr'],
+                hidden_size=params['hidden_size'],
+                num_layers=params['num_layers'],
+                dropout=params['dropout'],
+                verbose=False,
+                plot=False
+            )
+            
+            elapsed_time = time.time() - start_time
+            
+            # Extract metrics
+            overall_rmse = cv_results['overall_rmse']
+            overall_mae = cv_results['overall_mae']
+            avg_rmse = cv_results['avg_rmse']
+            avg_mae = cv_results['avg_mae']
+            
+            # Get last fold metrics
+            split_metrics_df = cv_results['split_metrics']
+            last_fold_rmse = split_metrics_df.iloc[-1]['rmse']
+            last_fold_mae = split_metrics_df.iloc[-1]['mae']
+            
+            # Store results
+            result_dict = {
+                'combination': idx,
+                'exog': str(params['exog']) if params['exog'] else 'None',
+                'n_exog': len(params['exog']) if params['exog'] else 0,
+                'lr': params['lr'],
+                'hidden_size': params['hidden_size'],
+                'num_layers': params['num_layers'],
+                'dropout': params['dropout'],
+                'overall_rmse': overall_rmse,
+                'overall_mae': overall_mae,
+                'avg_rmse': avg_rmse,
+                'avg_mae': avg_mae,
+                'last_fold_rmse': last_fold_rmse,
+                'last_fold_mae': last_fold_mae,
+                'time_seconds': elapsed_time
+            }
+            
+            results_list.append(result_dict)
+            
+            # Check if this is the best model by overall RMSE
+            if overall_rmse < best_overall_score:
+                best_overall_score = overall_rmse
+                best_overall_params = params.copy()
+                best_overall_results = cv_results
+            
+            # Check if this is the best model by average RMSE
+            if avg_rmse < best_avg_score:
+                best_avg_score = avg_rmse
+                best_avg_params = params.copy()
+                best_avg_results = cv_results
+            
+            # Check if this is the best model by last fold RMSE
+            if last_fold_rmse < best_last_fold_score:
+                best_last_fold_score = last_fold_rmse
+                best_last_fold_params = params.copy()
+                best_last_fold_results = cv_results
+            
+            if verbose >= 1:
+                print(f"\nResults for combination {idx}:")
+                print(f"  Overall RMSE: {overall_rmse:.4f}")
+                print(f"  Overall MAE: {overall_mae:.4f}")
+                print(f"  Average RMSE: {avg_rmse:.4f}")
+                print(f"  Average MAE: {avg_mae:.4f}")
+                print(f"  Last Fold RMSE: {last_fold_rmse:.4f}")
+                print(f"  Last Fold MAE: {last_fold_mae:.4f}")
+                print(f"  Time elapsed: {elapsed_time:.2f}s")
+                
+                # Mark which best models this is
+                best_markers = []
+                if overall_rmse == best_overall_score:
+                    best_markers.append("BEST OVERALL")
+                if avg_rmse == best_avg_score:
+                    best_markers.append("BEST AVG")
+                if last_fold_rmse == best_last_fold_score:
+                    best_markers.append("BEST LAST FOLD")
+                if best_markers:
+                    print(f"  *** {' | '.join(best_markers)} ***")
+        
+        except Exception as e:
+            if verbose >= 1:
+                print(f"\nERROR in combination {idx}: {str(e)}")
+            
+            result_dict = {
+                'combination': idx,
+                'exog': str(params['exog']) if params['exog'] else 'None',
+                'n_exog': len(params['exog']) if params['exog'] else 0,
+                'lr': params['lr'],
+                'hidden_size': params['hidden_size'],
+                'num_layers': params['num_layers'],
+                'dropout': params['dropout'],
+                'overall_rmse': np.nan,
+                'overall_mae': np.nan,
+                'avg_rmse': np.nan,
+                'avg_mae': np.nan,
+                'last_fold_rmse': np.nan,
+                'last_fold_mae': np.nan,
+                'time_seconds': np.nan,
+                'error': str(e)
+            }
+            results_list.append(result_dict)
+    
+    # Create results DataFrame
+    results_df = pd.DataFrame(results_list)
+    results_df = results_df.sort_values('overall_rmse', ascending=True).reset_index(drop=True)
+    
+    if verbose >= 1:
+        print(f"\n{'='*80}")
+        print(f"GRID SEARCH COMPLETE")
+        print(f"{'='*80}")
+        
+        print(f"\n{'='*80}")
+        print(f"BEST MODEL BY OVERALL RMSE (concatenated predictions)")
+        print(f"{'='*80}")
+        print(f"Overall RMSE: {best_overall_score:.4f}")
+        print(f"Overall MAE: {best_overall_results['overall_mae']:.4f}")
+        print(f"Average RMSE: {best_overall_results['avg_rmse']:.4f}")
+        print(f"Average MAE: {best_overall_results['avg_mae']:.4f}")
+        print(f"\nParameters:")
+        for key, val in best_overall_params.items():
+            print(f"  {key}: {val}")
+        
+        print(f"\n{'='*80}")
+        print(f"BEST MODEL BY AVERAGE RMSE (across folds)")
+        print(f"{'='*80}")
+        print(f"Average RMSE: {best_avg_score:.4f}")
+        print(f"Average MAE: {best_avg_results['avg_mae']:.4f}")
+        print(f"Overall RMSE: {best_avg_results['overall_rmse']:.4f}")
+        print(f"Overall MAE: {best_avg_results['overall_mae']:.4f}")
+        print(f"\nParameters:")
+        for key, val in best_avg_params.items():
+            print(f"  {key}: {val}")
+        
+        print(f"\n{'='*80}")
+        print(f"BEST MODEL BY LAST FOLD RMSE (most recent period)")
+        print(f"{'='*80}")
+        last_fold_info = best_last_fold_results['split_metrics'].iloc[-1]
+        print(f"Last Fold RMSE: {best_last_fold_score:.4f}")
+        print(f"Last Fold MAE: {last_fold_info['mae']:.4f}")
+        print(f"Test Period: {last_fold_info['test_start'].strftime('%Y-%m')} to {last_fold_info['test_end'].strftime('%Y-%m')}")
+        print(f"Overall RMSE: {best_last_fold_results['overall_rmse']:.4f}")
+        print(f"Average RMSE: {best_last_fold_results['avg_rmse']:.4f}")
+        print(f"\nParameters:")
+        for key, val in best_last_fold_params.items():
+            print(f"  {key}: {val}")
+        
+        print(f"\n{'='*80}")
+        print(f"TOP 10 MODELS BY OVERALL RMSE")
+        print(f"{'='*80}")
+        top_10_display = results_df[['combination', 'exog', 'lr', 'hidden_size', 
+                                     'num_layers', 'dropout', 'overall_rmse', 
+                                     'avg_rmse', 'last_fold_rmse']].head(10)
+        print(top_10_display.to_string(index=False))
+        print(f"{'='*80}\n")
+    
+    return {
+        'results': results_df,
+        'best_overall_params': best_overall_params,
+        'best_overall_score': best_overall_score,
+        'best_overall_results': best_overall_results,
+        'best_avg_params': best_avg_params,
+        'best_avg_score': best_avg_score,
+        'best_avg_results': best_avg_results,
+        'best_last_fold_params': best_last_fold_params,
+        'best_last_fold_score': best_last_fold_score,
+        'best_last_fold_results': best_last_fold_results,
+        'param_grid': param_grid,
+        'n_combinations': total_combinations
+    }
