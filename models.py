@@ -163,7 +163,7 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
         avg_loss = epoch_loss / len(train_loader)
         train_losses.append(avg_loss)
         
-        if (epoch + 1) % 10 == 0:
+        if plot and (epoch + 1) % 10 == 0:
             print(f'Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.6f}')
     
     # Forecasting
@@ -207,9 +207,6 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
     # Evaluate
     rmse = np.sqrt(mean_squared_error(test, forecast))
     mae = mean_absolute_error(test, forecast)
-    
-    print(f"\nRMSE: {rmse:.4f}")
-    print(f"MAE: {mae:.4f}")
     
     if plot:
         # Visualize results
@@ -429,20 +426,57 @@ def _plot_lstm_cv_results(df, target, split_metrics, forecasts, actuals, forecas
     plt.tight_layout()
     plt.show()
 
-def plot_lb_test(lb_results):
-    plt.figure(figsize=(12, 5))
-    plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
-    plt.axhline(0.05, linestyle='--', label='Significance level (0.05)')
-    plt.xlabel('Forecast window end date')
-    plt.ylabel('Ljung–Box p-value (lag 12)')
-    plt.title('Rolling Ljung–Box Test on Forecast Residuals')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
 import itertools
-
 import time
+
+def print_grid_search_results(results_df, best_overall_score, best_overall_results, best_overall_params, best_avg_score, best_avg_results, best_avg_params, best_last_fold_score, best_last_fold_results, best_last_fold_params):
+    print(f"\n{'='*80}")
+    print(f"GRID SEARCH COMPLETE")
+    print(f"{'='*80}")
+    
+    print(f"\n{'='*80}")
+    print(f"BEST MODEL BY OVERALL RMSE (concatenated predictions)")
+    print(f"{'='*80}")
+    print(f"Overall RMSE: {best_overall_score:.4f}")
+    print(f"Overall MAE: {best_overall_results['overall_mae']:.4f}")
+    print(f"Average RMSE: {best_overall_results['avg_rmse']:.4f}")
+    print(f"Average MAE: {best_overall_results['avg_mae']:.4f}")
+    print(f"\nParameters:")
+    for key, val in best_overall_params.items():
+        print(f"  {key}: {val}")
+    
+    print(f"\n{'='*80}")
+    print(f"BEST MODEL BY AVERAGE RMSE (across folds)")
+    print(f"{'='*80}")
+    print(f"Average RMSE: {best_avg_score:.4f}")
+    print(f"Average MAE: {best_avg_results['avg_mae']:.4f}")
+    print(f"Overall RMSE: {best_avg_results['overall_rmse']:.4f}")
+    print(f"Overall MAE: {best_avg_results['overall_mae']:.4f}")
+    print(f"\nParameters:")
+    for key, val in best_avg_params.items():
+        print(f"  {key}: {val}")
+    
+    print(f"\n{'='*80}")
+    print(f"BEST MODEL BY LAST FOLD RMSE (most recent period)")
+    print(f"{'='*80}")
+    last_fold_info = best_last_fold_results['split_metrics'].iloc[-1]
+    print(f"Last Fold RMSE: {best_last_fold_score:.4f}")
+    print(f"Last Fold MAE: {last_fold_info['mae']:.4f}")
+    print(f"Test Period: {last_fold_info['test_start'].strftime('%Y-%m')} to {last_fold_info['test_end'].strftime('%Y-%m')}")
+    print(f"Overall RMSE: {best_last_fold_results['overall_rmse']:.4f}")
+    print(f"Average RMSE: {best_last_fold_results['avg_rmse']:.4f}")
+    print(f"\nParameters:")
+    for key, val in best_last_fold_params.items():
+        print(f"  {key}: {val}")
+    
+    print(f"\n{'='*80}")
+    print(f"TOP 10 MODELS BY AVG RMSE")
+    print(f"{'='*80}")
+    top_10_display = results_df[['combination', 'exog', 'lr', 'hidden_size', 
+                                    'num_layers', 'dropout', 'overall_rmse', 
+                                    'avg_rmse', 'last_fold_rmse']].head(10)
+    print(top_10_display.to_string(index=False))
+    print(f"{'='*80}\n")
 
 def lstm_grid_search_cv(
     df,
@@ -719,56 +753,10 @@ def lstm_grid_search_cv(
     
     # Create results DataFrame
     results_df = pd.DataFrame(results_list)
-    results_df = results_df.sort_values('overall_rmse', ascending=True).reset_index(drop=True)
+    results_df = results_df.sort_values('avg_rmse', ascending=True).reset_index(drop=True)
     
     if verbose >= 1:
-        print(f"\n{'='*80}")
-        print(f"GRID SEARCH COMPLETE")
-        print(f"{'='*80}")
-        
-        print(f"\n{'='*80}")
-        print(f"BEST MODEL BY OVERALL RMSE (concatenated predictions)")
-        print(f"{'='*80}")
-        print(f"Overall RMSE: {best_overall_score:.4f}")
-        print(f"Overall MAE: {best_overall_results['overall_mae']:.4f}")
-        print(f"Average RMSE: {best_overall_results['avg_rmse']:.4f}")
-        print(f"Average MAE: {best_overall_results['avg_mae']:.4f}")
-        print(f"\nParameters:")
-        for key, val in best_overall_params.items():
-            print(f"  {key}: {val}")
-        
-        print(f"\n{'='*80}")
-        print(f"BEST MODEL BY AVERAGE RMSE (across folds)")
-        print(f"{'='*80}")
-        print(f"Average RMSE: {best_avg_score:.4f}")
-        print(f"Average MAE: {best_avg_results['avg_mae']:.4f}")
-        print(f"Overall RMSE: {best_avg_results['overall_rmse']:.4f}")
-        print(f"Overall MAE: {best_avg_results['overall_mae']:.4f}")
-        print(f"\nParameters:")
-        for key, val in best_avg_params.items():
-            print(f"  {key}: {val}")
-        
-        print(f"\n{'='*80}")
-        print(f"BEST MODEL BY LAST FOLD RMSE (most recent period)")
-        print(f"{'='*80}")
-        last_fold_info = best_last_fold_results['split_metrics'].iloc[-1]
-        print(f"Last Fold RMSE: {best_last_fold_score:.4f}")
-        print(f"Last Fold MAE: {last_fold_info['mae']:.4f}")
-        print(f"Test Period: {last_fold_info['test_start'].strftime('%Y-%m')} to {last_fold_info['test_end'].strftime('%Y-%m')}")
-        print(f"Overall RMSE: {best_last_fold_results['overall_rmse']:.4f}")
-        print(f"Average RMSE: {best_last_fold_results['avg_rmse']:.4f}")
-        print(f"\nParameters:")
-        for key, val in best_last_fold_params.items():
-            print(f"  {key}: {val}")
-        
-        print(f"\n{'='*80}")
-        print(f"TOP 10 MODELS BY OVERALL RMSE")
-        print(f"{'='*80}")
-        top_10_display = results_df[['combination', 'exog', 'lr', 'hidden_size', 
-                                     'num_layers', 'dropout', 'overall_rmse', 
-                                     'avg_rmse', 'last_fold_rmse']].head(10)
-        print(top_10_display.to_string(index=False))
-        print(f"{'='*80}\n")
+        print_grid_search_results(results_df, best_overall_score, best_overall_results, best_avg_params, best_avg_score, best_avg_results, best_avg_params, best_last_fold_score, best_last_fold_results, best_avg_score)
     
     return {
         'results': results_df,
