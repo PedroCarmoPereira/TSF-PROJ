@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import pandas as pd
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf, month_plot
+from statsmodels.graphics.gofplots import qqplot
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from utils import get_residuals_any
@@ -99,12 +100,19 @@ def plot_acfs(df, col, lags=36):
     plt.show()
 
 
-def plot_lb_test(lb_results, lag=12, rolling_window=True):
+def plot_lb_test(lb_results, lag=12, rolling_window=False):
     plt.figure(figsize=(12, 5))
-    if rolling_window:
-        plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
-    else:
-        plt.plot(lb_results['lb_stat'], lb_results['lb_pvalue'], marker='o')
+    plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
+    plt.axhline(0.05, linestyle='--', label='Significance level (0.05)')
+    plt.xlabel('Forecast window end date')
+    plt.ylabel(f'Ljung–Box p-value (lag {lag})')
+    plt.title('Rolling Ljung–Box Test on Forecast Residuals')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+def plot_lb_test_not_rolling(lb_results, lag=12, rolling_window=False):
+    plt.figure(figsize=(12, 5))
+    plt.plot(lb_results['lb_stat'], lb_results['lb_pvalue'], marker='o')
     plt.axhline(0.05, linestyle='--', label='Significance level (0.05)')
     plt.xlabel('Forecast window end date')
     plt.ylabel(f'Ljung–Box p-value (lag {lag})')
@@ -159,7 +167,7 @@ def plot_sarimax_results(
     plt.show()
 
     # 3. QQ plot
-    from statsmodels.graphics.gofplots import qqplot
+    
     qqplot(resid, line="s")
     plt.title("QQ Plot of Residuals")
     plt.show()
@@ -174,4 +182,158 @@ def plot_sarimax_results(
     from statsmodels.stats.diagnostic import acorr_ljungbox
     lb = acorr_ljungbox(resid, lags=12, return_df=True)
 
-    plot_lb_test(lb, rolling_window)
+    plot_lb_test_not_rolling(lb, rolling_window)
+
+def plot_cv_results(df, target, split_metrics, forecasts, actuals, 
+                     train_months, forecast_months):
+    """Helper function to visualize cross-validation results."""
+    
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+    
+    # Plot 1: All data with CV splits highlighted
+    ax1 = axes[0]
+    ax1.plot(df.index, df[target], label='Full Data', alpha=0.7, color='blue')
+    
+    for i, split_info in enumerate(split_metrics):
+        test_start = split_info['test_start']
+        test_end = split_info['test_end']
+        ax1.axvspan(test_start, test_end, alpha=0.2, color='red', 
+                   label='Test Period' if i == 0 else '')
+        ax1.axvline(split_info['train_end'], color='green', linestyle='--', 
+                   alpha=0.5, label='Train End' if i == 0 else '')
+    
+    ax1.set_title(f'Time Series with CV Splits ({train_months//12}yr train, {forecast_months}mo forecast)')
+    ax1.set_xlabel('Date')
+    ax1.set_ylabel(target)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Forecast vs Actual for test periods
+    ax2 = axes[1]
+    
+    # Reconstruct index for forecasts
+    forecast_indices = []
+    for split_info in split_metrics:
+        test_start = split_info['test_start']
+        test_end = split_info['test_end']
+        indices = df.loc[test_start:test_end].index
+        forecast_indices.extend(indices[:forecast_months])
+    
+    ax2.plot(forecast_indices, actuals, label='Actual', marker='o', 
+            markersize=3, linewidth=1.5)
+    ax2.plot(forecast_indices, forecasts, label='Forecast', marker='x', 
+            markersize=3, linewidth=1.5, alpha=0.7)
+    
+    ax2.set_title('Forecast vs Actual (SARIMAX)')
+    ax2.set_xlabel('Date')
+    ax2.set_ylabel(target)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Plot metrics over splits
+    metrics_df = pd.DataFrame(split_metrics)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(metrics_df['split'], metrics_df['rmse'], marker='o', label='RMSE')
+    ax.plot(metrics_df['split'], metrics_df['mae'], marker='s', label='MAE')
+    ax.set_xlabel('Split Number')
+    ax.set_ylabel('Error')
+    ax.set_title('Forecast Errors Across CV Splits')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
+
+def plot_sarimax_cv_results(
+    df,
+    target,
+    split_metrics,
+    forecasts,
+    actuals,
+    forecast_months,
+    residuals=None,
+    lb=None,
+    lags_acf=24,
+    lags_lb=12,
+):
+    """Visualize SARIMAX cross-validation results + diagnostics (CV residuals)."""
+
+    # --- Reconstruct index for CV test predictions (legacy approach) ---
+    forecast_indices = []
+    for split_info in split_metrics:
+        test_start = split_info["test_start"]
+        test_end = split_info["test_end"]
+        indices = df.loc[test_start:test_end].index
+        forecast_indices.extend(indices[:forecast_months])
+
+    # Ensure same length
+    n = min(len(forecast_indices), len(actuals), len(forecasts))
+    forecast_indices = forecast_indices[:n]
+    actuals = list(actuals)[:n]
+    forecasts = list(forecasts)[:n]
+
+    # --- 1) Forecast vs Actual (all CV test periods) ---
+    plt.figure(figsize=(12, 6))
+    plt.plot(df.index, df[target], label="Full Series", alpha=0.35)
+    plt.plot(forecast_indices, actuals, label="Actual (CV tests)", marker="o", markersize=3, linewidth=1.5)
+    plt.plot(forecast_indices, forecasts, label="Forecast (CV)", marker="x", markersize=3, linewidth=1.5, alpha=0.7)
+    plt.title("SARIMAX Forecast vs Actual (All CV Test Periods)")
+    plt.xlabel("Date")
+    plt.ylabel(target)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # --- Residuals series (test residuals) ---
+    if residuals is None:
+        residuals = [a - f for a, f in zip(actuals, forecasts)]
+
+    resid = pd.Series(residuals, index=pd.Index(forecast_indices, name="date")).dropna()
+
+    # Standardize (like typical diagnostics)
+    std = resid.std(ddof=1)
+    if std == 0 or np.isnan(std):
+        std = 1.0
+    resid_std = resid / std
+
+    # --- 2) Standardized residuals ---
+    plt.figure(figsize=(10, 3))
+    plt.plot(resid_std.index, resid_std.values)
+    plt.title("Standardized Residuals (CV test periods)")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # --- 3) Histogram of residuals (standardized) ---
+    plt.figure(figsize=(6, 4))
+    plt.hist(resid_std.values, bins=30, density=True)
+    plt.title("Residual Distribution (standardized, CV)")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # --- 4) QQ Plot ---
+    qqplot(resid_std.values, line="s")
+    plt.title("QQ Plot of Residuals (CV)")
+    plt.tight_layout()
+    plt.show()
+
+    # --- 5) ACF of residuals ---
+    plot_acf(resid_std.values, lags=lags_acf)
+    plt.title("ACF of Residuals (CV)")
+    plt.tight_layout()
+    plt.show()
+
+    # --- 6) Ljung–Box test ---
+    if lb is None:
+        lb = acorr_ljungbox(resid_std.values, lags=lags_lb, return_df=True)
+
+    # Use your existing helper
+    plot_lb_test(lb)
+    plt.tight_layout()
+    plt.show()
