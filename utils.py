@@ -1,7 +1,9 @@
 import os
 import numpy as np
 import pandas as pd
-from statsmodels.tsa.stattools import adfuller, kpss
+from statsmodels.tsa.stattools import acf, pacf, adfuller, kpss
+from itertools import product
+from arch.unitroot import PhillipsPerron
 
 DATA_DIR = 'data'
 PREC_FILE = 'prec-Mainland-raw.csv'
@@ -52,16 +54,203 @@ def load_data():
     selected_data = selected_data.set_index('date', drop=False)
     return selected_data
 
-def check_stationarity(timeseries, regression='ct'):
+from statsmodels.tsa.stattools import adfuller, kpss
+from arch.unitroot import PhillipsPerron
+
+def check_stationarity(timeseries, regression='ct', alpha=0.05):
+
+    print("=== Augmented Dickey-Fuller (ADF) ===")
     adf_val = adfuller(timeseries, regression=regression, autolag='AIC')
-    p_value = adf_val[1]
-    print(f'ADF Statistic: {adf_val[0]}')
-    print(f'p-value: {p_value}')
-    if p_value < 0.05:
-        print('Stationary')
-    kpss_val = kpss(timeseries, regression=regression, nlags="auto")
-    p_value = kpss_val[1]
-    print(f'KPSS Statistic: {kpss_val[0]}')
-    print(f'p-value: {p_value}')
-    if p_value > 0.05:
-        print('Stationary')
+    print(f"ADF Statistic: {adf_val[0]:.4f}")
+    print(f"p-value: {adf_val[1]:.4f}")
+    print("Result:", "Stationary" if adf_val[1] < alpha else "Non-stationary")
+
+    print("\n=== Phillips–Perron (PP) ===")
+    pp = PhillipsPerron(timeseries, trend=regression)
+    print(f"PP Statistic: {pp.stat:.4f}")
+    print(f"p-value: {pp.pvalue:.4f}")
+    print("Result:", "Stationary" if pp.pvalue < alpha else "Non-stationary")
+
+    print("\n=== KPSS ===")
+    kpss_stat, kpss_p, _, _ = kpss(timeseries, regression=regression, nlags="auto")
+    print(f"KPSS Statistic: {kpss_stat:.4f}")
+    print(f"p-value: {kpss_p:.4f}")
+    print("Result:", "Stationary" if kpss_p > alpha else "Non-stationary")
+import numpy as np
+from itertools import product
+from statsmodels.tsa.stattools import acf, pacf
+
+
+def sarima_candidates_from_acf(
+    y,
+    m=None,          # seasonal period, e.g. 12 for monthly data. If None -> no seasonal part.
+    max_lag=None,    # max lag for ACF/PACF
+    max_p=3,
+    max_q=3,
+    max_P=1,
+    max_Q=1,
+    d=0,
+    D=0,
+    alpha=0.05,
+    max_short_lag=12,  # how far to look for non-seasonal p,q
+):
+    """
+    Suggest SARIMA(p,d,q)(P,D,Q,m) candidates based on ACF/PACF.
+
+    Parameters
+    ----------
+    y : array-like
+        1D time series (already differenced if needed).
+    m : int or None
+        Seasonal period (e.g. 12 for monthly data). If None, no seasonal part is suggested.
+    max_lag : int or None
+        Maximum lag for ACF/PACF. If None, uses min(40, len(y)//2).
+    max_p, max_q : int
+        Maximum non-seasonal AR/MA order to consider (upper bounds, but we also cap by max_short_lag and m-1).
+    max_P, max_Q : int
+        Maximum seasonal AR/MA order to consider. In this implementation we only use 0 or 1 (textbook Box–Jenkins).
+    d, D : int
+        Already-used non-seasonal and seasonal differencing orders.
+    alpha : float
+        Significance level for ACF/PACF cut-off (default 0.05, ~95% bounds).
+    max_short_lag : int
+        Maximum lag to look at for non-seasonal dynamics. Typically 3–5 is enough.
+
+    Returns
+    -------
+    result : dict
+        {
+          "acf": np.ndarray,
+          "pacf": np.ndarray,
+          "crit": float,
+          "p_candidates": list[int],
+          "q_candidates": list[int],
+          "P_candidates": list[int],
+          "Q_candidates": list[int],
+          "candidates": list[tuple]   # (p, d, q, P, D, Q, m)
+        }
+    """
+    y = np.asarray(y)
+    n = len(y)
+
+    if max_lag is None:
+        max_lag = min(40, n // 2)
+    print("n:", len(y))
+    print("NaNs:", pd.Series(y).isna().sum())
+    print("var:", np.var(pd.Series(y).dropna()))
+    # --- 1. Compute ACF and PACF ---
+    acf_vals = acf(y, nlags=max_lag, fft=True)
+    pacf_vals = pacf(y, nlags=max_lag, method="ywm")
+
+    # approximate 95% significance bounds: ±1.96 / sqrt(n)
+    crit = 1.96 / np.sqrt(n)
+
+    # --- 2. Non-seasonal candidates (p, q) ---
+
+    # limit how far we look for non-seasonal structure
+    # and never let q reach the seasonal lag m
+    max_p_lag = min(max_p, max_short_lag)
+    if m is not None and m > 1:
+        max_q_lag = min(max_q, max_short_lag, m - 1)
+    else:
+        max_q_lag = min(max_q, max_short_lag)
+
+    # p ~ AR terms from PACF at small lags
+    p_candidates = [0]
+    for k in range(1, max_p_lag + 1):
+        if abs(pacf_vals[k]) > crit:
+            p_candidates.append(k)
+    p_candidates = sorted(set(p_candidates))
+    if len(p_candidates) == 1:  # only [0]
+        p_candidates.append(1)  # at least allow AR(1)
+    # optionally cap how many we keep
+    p_candidates = p_candidates[:3]
+
+    # q ~ MA terms from ACF at small lags
+    q_candidates = [0]
+    for k in range(1, max_q_lag + 1):
+        if abs(acf_vals[k]) > crit:
+            q_candidates.append(k)
+    q_candidates = sorted(set(q_candidates))
+    if len(q_candidates) == 1:  # only [0]
+        q_candidates.append(1)  # at least allow MA(1)
+    q_candidates = q_candidates[:3]
+
+    # --- 3. Seasonal candidates (P, Q) ---
+
+    P_candidates = [0]
+    Q_candidates = [0]
+
+    if m is not None and m > 1 and m <= max_lag:
+        # how many seasonal lags we can even look at (m, 2m, 3m, ...)
+        max_seasonal_k = max_lag // m
+
+        # P from PACF at seasonal lags: m, 2m, 3m, ...
+        for j in range(1, min(max_P, max_seasonal_k) + 1):
+            lag = j * m
+            if abs(pacf_vals[lag]) > crit:
+                P_candidates.append(j)
+
+        # Q from ACF at seasonal lags: m, 2m, 3m, ...
+        for j in range(1, min(max_Q, max_seasonal_k) + 1):
+            lag = j * m
+            if abs(acf_vals[lag]) > crit:
+                Q_candidates.append(j)
+
+    P_candidates = sorted(set(P_candidates))
+    Q_candidates = sorted(set(Q_candidates))
+    # --- 4. Build candidate list ---
+
+    candidates = []
+    s = m or 0
+    for p, q, P, Q in product(p_candidates, q_candidates, P_candidates, Q_candidates):
+        # Avoid invalid MA overlap: if Q>0, don't let q >= s (non-seasonal MA up to seasonal lag)
+        if s > 0 and Q > 0 and q >= s:
+            continue
+        candidates.append((p, d, q, P, D, Q, s))
+
+    return {
+        "acf": acf_vals,
+        "pacf": pacf_vals,
+        "crit": crit,
+        "p_candidates": p_candidates,
+        "q_candidates": q_candidates,
+        "P_candidates": P_candidates,
+        "Q_candidates": Q_candidates,
+        "candidates": candidates,
+        "max_lag": max_lag
+    }
+
+def get_residuals_any(results, train=None):
+    """
+    Return residuals as a clean numeric pd.Series for:
+    - statsmodels SARIMAXResultsWrapper
+    - pmdarima.arima.ARIMA
+    """
+    import numpy as np
+    import pandas as pd
+
+    # --- statsmodels SARIMAXResultsWrapper ---
+    if hasattr(results, "resid"):
+        r = results.resid
+        # if resid is a method, call it
+        if callable(r):
+            r = r()
+        try:
+            return pd.Series(r).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+        except Exception:
+            pass
+
+    # --- pmdarima ARIMA ---
+    # pmdarima provides resid() method in many versions
+    if hasattr(results, "resid") and callable(getattr(results, "resid")):
+        r = results.resid()
+        return pd.Series(r).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+
+    # Fallback: compute residuals manually if we have train
+    if train is not None and hasattr(results, "predict_in_sample"):
+        fitted = results.predict_in_sample()
+        r = pd.Series(train).iloc[-len(fitted):].to_numpy() - np.asarray(fitted)
+        return pd.Series(r).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+
+    raise TypeError("Could not extract residuals from results object.")
