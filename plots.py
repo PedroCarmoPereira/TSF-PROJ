@@ -99,7 +99,7 @@ def plot_acfs(df, col, lags=36):
     plt.show()
 
 
-def plot_lb_test(lb_results, rolling_window):
+def plot_lb_test(lb_results, rolling_window=True):
     plt.figure(figsize=(12, 5))
     if rolling_window:
         plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
