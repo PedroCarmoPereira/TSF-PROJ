@@ -9,7 +9,7 @@ DATA_DIR = 'data'
 PREC_FILE = 'prec-Mainland-raw.csv'
 TEMP_FILE = 'temp-Mainland-raw.csv'
 
-DATA_START = "1995-01-01"
+DATA_START = "1994-01-01"
 DATA_END = "2020-01-01"
 
 def load_prec():
@@ -34,6 +34,14 @@ def load_temp():
 
     return temp_data
 
+def generate_lag(selected_data, lag):
+    selected_data[f'lagged_tdiff_{lag}'] = selected_data['tdiff'].shift(lag)
+    selected_data[f'lagged_prec_{lag}'] = selected_data['prec'].shift(lag)
+    selected_data[f'lagged_tmed_{lag}'] = selected_data['tmed'].shift(lag)
+    selected_data[f'lagged_tmax_{lag}'] = selected_data['tmax'].shift(lag)
+    selected_data[f'lagged_tmin_{lag}'] = selected_data['tmin'].shift(lag)
+
+
 def load_data():
     prec_data = load_prec()
     temp_data = load_temp()
@@ -46,11 +54,9 @@ def load_data():
     selected_data = full_data[full_data['date'].between(DATA_START, DATA_END)]
     selected_data['log_diff'] = np.log(selected_data['tdiff'])
 
-    selected_data['lagged_tdiff'] = selected_data['tdiff'].shift(1)
-    selected_data['lagged_prec'] = selected_data['prec'].shift(1)
-    selected_data['lagged_tmed'] = selected_data['tmed'].shift(1)
-    selected_data['lagged_tmax'] = selected_data['tmax'].shift(1)
-    selected_data['lagged_tmin'] = selected_data['tmin'].shift(1)
+    generate_lag(selected_data, 1)
+    generate_lag(selected_data, 12)
+    generate_lag(selected_data, 24)
     selected_data = selected_data.set_index('date', drop=False)
     return selected_data
 
