@@ -49,8 +49,8 @@ def load_data():
     selected_data['lagged_tdiff'] = selected_data['tdiff'].shift(1)
     selected_data['lagged_prec'] = selected_data['prec'].shift(1)
     selected_data['lagged_tmed'] = selected_data['tmed'].shift(1)
-    selected_data['lagged_tmax'] = selected_data['tmed'].shift(1)
-    selected_data['lagged_tmin'] = selected_data['tmed'].shift(1)
+    selected_data['lagged_tmax'] = selected_data['tmax'].shift(1)
+    selected_data['lagged_tmin'] = selected_data['tmin'].shift(1)
     selected_data = selected_data.set_index('date', drop=False)
     return selected_data
 
