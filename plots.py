@@ -99,7 +99,7 @@ def plot_acfs(df, col, lags=36):
     plt.show()
 
 
-def plot_lb_test(lb_results, rolling_window=True):
+def plot_lb_test(lb_results, lag=12, rolling_window=True):
     plt.figure(figsize=(12, 5))
     if rolling_window:
         plt.plot(lb_results['ds'], lb_results['p_value'], marker='o')
@@ -107,7 +107,7 @@ def plot_lb_test(lb_results, rolling_window=True):
         plt.plot(lb_results['lb_stat'], lb_results['lb_pvalue'], marker='o')
     plt.axhline(0.05, linestyle='--', label='Significance level (0.05)')
     plt.xlabel('Forecast window end date')
-    plt.ylabel('Ljung–Box p-value (lag 12)')
+    plt.ylabel(f'Ljung–Box p-value (lag {lag})')
     plt.title('Rolling Ljung–Box Test on Forecast Residuals')
     plt.legend()
     plt.grid(True)
