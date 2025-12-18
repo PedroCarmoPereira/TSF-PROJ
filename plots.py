@@ -184,34 +184,12 @@ def plot_sarimax_results(
 
     plot_lb_test_not_rolling(lb, rolling_window)
 
-def plot_cv_results(df, target, split_metrics, forecasts, actuals, 
-                     train_months, forecast_months):
-    """Helper function to visualize cross-validation results."""
-    
-    fig, axes = plt.subplots(2, 1, figsize=(14, 10))
-    
-    # Plot 1: All data with CV splits highlighted
-    ax1 = axes[0]
-    ax1.plot(df.index, df[target], label='Full Data', alpha=0.7, color='blue')
-    
-    for i, split_info in enumerate(split_metrics):
-        test_start = split_info['test_start']
-        test_end = split_info['test_end']
-        ax1.axvspan(test_start, test_end, alpha=0.2, color='red', 
-                   label='Test Period' if i == 0 else '')
-        ax1.axvline(split_info['train_end'], color='green', linestyle='--', 
-                   alpha=0.5, label='Train End' if i == 0 else '')
-    
-    ax1.set_title(f'Time Series with CV Splits ({train_months//12}yr train, {forecast_months}mo forecast)')
-    ax1.set_xlabel('Date')
-    ax1.set_ylabel(target)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    # Plot 2: Forecast vs Actual for test periods
-    ax2 = axes[1]
-    
-    # Reconstruct index for forecasts
+
+
+
+def plot_sarima_cv_results(df, target, split_metrics, forecasts, actuals, forecast_months, residuals, lb):
+    """Helper function to visualize SARIMA cross-validation results."""
+
     forecast_indices = []
     for split_info in split_metrics:
         test_start = split_info['test_start']
@@ -219,121 +197,115 @@ def plot_cv_results(df, target, split_metrics, forecasts, actuals,
         indices = df.loc[test_start:test_end].index
         forecast_indices.extend(indices[:forecast_months])
     
-    ax2.plot(forecast_indices, actuals, label='Actual', marker='o', 
+    plt.plot(forecast_indices, actuals, label='Actual', marker='o', 
             markersize=3, linewidth=1.5)
-    ax2.plot(forecast_indices, forecasts, label='Forecast', marker='x', 
+    plt.plot(forecast_indices, forecasts, label='Forecast', marker='x', 
             markersize=3, linewidth=1.5, alpha=0.7)
-    
-    ax2.set_title('Forecast vs Actual (SARIMAX)')
-    ax2.set_xlabel('Date')
-    ax2.set_ylabel(target)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.show()
-    
-    # Plot metrics over splits
-    metrics_df = pd.DataFrame(split_metrics)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(metrics_df['split'], metrics_df['rmse'], marker='o', label='RMSE')
-    ax.plot(metrics_df['split'], metrics_df['mae'], marker='s', label='MAE')
-    ax.set_xlabel('Split Number')
-    ax.set_ylabel('Error')
-    ax.set_title('Forecast Errors Across CV Splits')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-
-
-def plot_sarimax_cv_results(
-    df,
-    target,
-    split_metrics,
-    forecasts,
-    actuals,
-    forecast_months,
-    residuals=None,
-    lb=None,
-    lags_acf=24,
-    lags_lb=12,
-):
-    """Visualize SARIMAX cross-validation results + diagnostics (CV residuals)."""
-
-    # --- Reconstruct index for CV test predictions (legacy approach) ---
-    forecast_indices = []
-    for split_info in split_metrics:
-        test_start = split_info["test_start"]
-        test_end = split_info["test_end"]
-        indices = df.loc[test_start:test_end].index
-        forecast_indices.extend(indices[:forecast_months])
-
-    # Ensure same length
-    n = min(len(forecast_indices), len(actuals), len(forecasts))
-    forecast_indices = forecast_indices[:n]
-    actuals = list(actuals)[:n]
-    forecasts = list(forecasts)[:n]
-
-    # --- 1) Forecast vs Actual (all CV test periods) ---
-    plt.figure(figsize=(12, 6))
-    plt.plot(df.index, df[target], label="Full Series", alpha=0.35)
-    plt.plot(forecast_indices, actuals, label="Actual (CV tests)", marker="o", markersize=3, linewidth=1.5)
-    plt.plot(forecast_indices, forecasts, label="Forecast (CV)", marker="x", markersize=3, linewidth=1.5, alpha=0.7)
-    plt.title("SARIMAX Forecast vs Actual (All CV Test Periods)")
-    plt.xlabel("Date")
+    plt.title('SARIMA Forecast vs Actual (All Test Periods)')
+    plt.xlabel('Date')
     plt.ylabel(target)
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+    
+    # Plot 3: Metrics across splits
+    residuals = [a - f for a, f in zip(actuals, forecasts)]
+    plot_acf(pd.Series(residuals))
 
-    # --- Residuals series (test residuals) ---
-    if residuals is None:
-        residuals = [a - f for a, f in zip(actuals, forecasts)]
-
-    resid = pd.Series(residuals, index=pd.Index(forecast_indices, name="date")).dropna()
-
-    # Standardize (like typical diagnostics)
-    std = resid.std(ddof=1)
-    if std == 0 or np.isnan(std):
-        std = 1.0
-    resid_std = resid / std
-
-    # --- 2) Standardized residuals ---
-    plt.figure(figsize=(10, 3))
-    plt.plot(resid_std.index, resid_std.values)
-    plt.title("Standardized Residuals (CV test periods)")
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-    # --- 3) Histogram of residuals (standardized) ---
-    plt.figure(figsize=(6, 4))
-    plt.hist(resid_std.values, bins=30, density=True)
-    plt.title("Residual Distribution (standardized, CV)")
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-    # --- 4) QQ Plot ---
-    qqplot(resid_std.values, line="s")
-    plt.title("QQ Plot of Residuals (CV)")
-    plt.tight_layout()
-    plt.show()
-
-    # --- 5) ACF of residuals ---
-    plot_acf(resid_std.values, lags=lags_acf)
-    plt.title("ACF of Residuals (CV)")
-    plt.tight_layout()
-    plt.show()
-
-    # --- 6) Ljung–Box test ---
-    if lb is None:
-        lb = acorr_ljungbox(resid_std.values, lags=lags_lb, return_df=True)
-
-    # Use your existing helper
     plot_lb_test(lb)
+    plt.tight_layout()
+    plt.show()
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from statsmodels.graphics.tsaplots import plot_acf
+from statsmodels.stats.diagnostic import acorr_ljungbox
+
+def plot_last_fold(last_fold, *, alpha=0.05, acf_lags=12, lb_lags=12):
+    """
+    Plots for a single CV fold (typically the last fold):
+      1) Actual vs Predicted (+ optional confidence interval band)
+      2) Rolling Ljung-Box p-values across lags 1..lb_lags
+      3) ACF of residuals
+
+    Expects last_fold dict to contain:
+      - "y_true": pd.Series
+      - "y_pred": pd.Series
+      - "resid":  pd.Series
+      - optional "conf_int": pd.DataFrame (2 cols: lower/upper) aligned to index
+      - optional "test_start", "test_end" for titles
+    """
+    y_true = last_fold["y_true"].copy()
+    y_pred = last_fold["y_pred"].copy()
+    resid  = last_fold["resid"].copy()
+    ci     = last_fold.get("conf_int", None)
+
+    # --- Align everything on the same index
+    idx = y_true.index.intersection(y_pred.index)
+    y_true = y_true.reindex(idx)
+    y_pred = y_pred.reindex(idx)
+    resid  = (y_true - y_pred) if resid is None else resid.reindex(idx)
+
+    if ci is not None:
+        ci = ci.reindex(idx)
+
+    # Title helpers
+    test_start = last_fold.get("test_start", idx.min())
+    test_end   = last_fold.get("test_end", idx.max())
+    title_suffix = f"({pd.to_datetime(test_start).date()} → {pd.to_datetime(test_end).date()})"
+
+    # =========================
+    # 1) Actual vs Predicted
+    # =========================
+    plt.figure(figsize=(10, 4))
+    plt.plot(idx, y_true.values, label="Actual")
+    plt.plot(idx, y_pred.values, label="Predicted")
+
+    if ci is not None and isinstance(ci, pd.DataFrame) and ci.shape[1] >= 2:
+        lower = ci.iloc[:, 0].to_numpy(dtype=float)
+        upper = ci.iloc[:, 1].to_numpy(dtype=float)
+        plt.fill_between(idx, lower, upper, alpha=0.2, label=f"{int((1-alpha)*100)}% CI")
+
+    plt.title(f"Actual vs Predicted (Last CV Fold) {title_suffix}")
+    plt.xlabel("Date")
+    plt.ylabel(target := "Value")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # =========================
+    # 2) Rolling Ljung-Box p-values
+    #    (across lags 1..lb_lags)
+    # =========================
+    r = resid.dropna().astype(float).to_numpy()
+    if len(r) < 3:
+        print("Not enough residual points to compute Ljung-Box / ACF.")
+        return
+
+    max_lag_possible = max(1, len(r) - 1)
+    lb_lags_eff = int(min(lb_lags, max_lag_possible))
+
+    lags = list(range(1, lb_lags_eff + 1))
+    lb_df = acorr_ljungbox(r, lags=lags, return_df=True)
+
+    plt.figure(figsize=(10, 3.5))
+    plt.plot(lb_df.index, lb_df["lb_pvalue"].values, marker="o", label="p-value")
+    plt.axhline(alpha, linestyle="--", label=f"Significance level ({alpha})")
+    plt.title(f"Rolling Ljung-Box Test on Residuals {title_suffix}")
+    plt.xlabel("Lag")
+    plt.ylabel("p-value")
+    plt.ylim(0, 1.0)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # =========================
+    # 3) ACF of residuals
+    # =========================
+    acf_lags_eff = int(min(acf_lags, len(r) - 1))
+    plt.figure(figsize=(10, 3.5))
+    plot_acf(r, lags=acf_lags_eff)
+    plt.title(f"ACF of Residuals (Last CV Fold) {title_suffix}")
     plt.tight_layout()
     plt.show()
