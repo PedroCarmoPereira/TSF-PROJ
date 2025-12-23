@@ -145,8 +145,8 @@ def auto_sarima_experiment(
     forecast_window=12,
     no_windows=10,
     exog=None,
-    max_p=3, max_q=3,
-    max_P=2, max_Q=2,
+    max_p=5, max_q=5,
+    max_P=5, max_Q=5,
     metric="rmse",
     trace=True,
 
@@ -189,10 +189,9 @@ def auto_sarima_experiment(
         start_q=0, max_q=max_q,
         start_P=0, max_P=max_P,
         start_Q=0, max_Q=max_Q,
-        stepwise=True,
+        stepwise=False,
         trace=trace,
-        error_action="ignore",
-        suppress_warnings=True,
+        
     )
 
     # Extract orders
