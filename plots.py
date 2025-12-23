@@ -309,3 +309,40 @@ def plot_last_fold(last_fold, *, alpha=0.05, acf_lags=12, lb_lags=12):
     plt.title(f"ACF of Residuals (Last CV Fold) {title_suffix}")
     plt.tight_layout()
     plt.show()
+
+def plots_from_ml_results(results, lb_results):
+    # Preiction vs Actual plot
+    plt.figure(figsize=(12, 6))
+    plt.plot(results["ds"], results["actual"], label="Actual", linewidth=2)
+    plt.plot(results["ds"], results["predicted"], label="Predicted", linewidth=2)
+    plt.title("Actual vs Predicted values")
+    plt.xlabel("Date")
+    plt.ylabel("Value")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    residuals = np.array(results.actual) - np.array(results.predicted)
+
+    plt.figure(figsize=(12, 4))
+    plt.scatter(results["ds"], residuals)
+    plt.axhline(0)
+    plt.title("Residuals over time")
+    plt.xlabel("Date")
+    plt.ylabel("Residual")
+    plt.show()
+
+    lb_df = pd.DataFrame(lb_results)
+    plot_lb_test(lb_df)
+
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    plot_acf(residuals, lags=12, ax=axes[0])
+    axes[0].set_title("ACF of Residuals")
+    
+    plot_pacf(residuals, lags=12, ax=axes[1], method="ywm")
+    axes[1].set_title("PACF of Residuals")
+    
+    plt.tight_layout()
+    plt.show()
