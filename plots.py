@@ -288,6 +288,7 @@ def plot_last_fold(last_fold, *, alpha=0.05, acf_lags=12, lb_lags=12):
 
     lags = list(range(1, lb_lags_eff + 1))
     lb_df = acorr_ljungbox(r, lags=lags, return_df=True)
+    print(lb_df)
 
     plt.figure(figsize=(10, 3.5))
     plt.plot(lb_df.index, lb_df["lb_pvalue"].values, marker="o", label="p-value")
