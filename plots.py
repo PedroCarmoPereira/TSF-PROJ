@@ -198,9 +198,9 @@ def plots_from_ml_results(results, lb_results):
     plt.ylabel("Residual")
     plt.show()
 
+    print("Ljung Box Test Results:", lb_results)
     lb_df = pd.DataFrame(lb_results)
     plot_lb_test(lb_df)
-
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
