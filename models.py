@@ -720,7 +720,7 @@ def lstm_experiment(df, target, forecast_window=12, no_windows=10,
     
     # Create datasets - FIXED: Pass scaled exog data
     train_dataset = TimeSeriesDataset(train_scaled, exog_train_scaled, seq_length)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size)
     
     # Initialize model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
