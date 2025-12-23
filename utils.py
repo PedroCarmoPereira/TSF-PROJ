@@ -260,3 +260,4 @@ def get_residuals_any(results, train=None):
         return pd.Series(r).astype(float).replace([np.inf, -np.inf], np.nan).dropna()
 
     raise TypeError("Could not extract residuals from results object.")
+

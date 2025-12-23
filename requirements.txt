@@ -1,0 +1,11 @@
+numpy
+pandas
+torch
+matplotlib
+xgboost
+prophet
+statsmodels
+arch
+seaborn
+scipy
+scikit-learn
