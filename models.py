@@ -145,8 +145,8 @@ def auto_sarima_experiment(
     forecast_window=12,
     no_windows=10,
     exog=None,
-    max_p=3, max_q=3,
-    max_P=2, max_Q=2,
+    max_p=5, max_q=5,
+    max_P=5, max_Q=5,
     metric="rmse",
     trace=True,
 
@@ -189,10 +189,9 @@ def auto_sarima_experiment(
         start_q=0, max_q=max_q,
         start_P=0, max_P=max_P,
         start_Q=0, max_Q=max_Q,
-        stepwise=True,
+        stepwise=False,
         trace=trace,
-        error_action="ignore",
-        suppress_warnings=True,
+        
     )
 
     # Extract orders
@@ -217,255 +216,420 @@ def auto_sarima_experiment(
     return rmse, mae, model, forecast, test, train, order , seasonal_order
 
 
-def sarimax_rolling_cv(
-    df,
-    target,
-    order,
-    seasonal_order,
-    forecast_window=12,
-    train_size=None,
-    step=None,
-    exog=None,
-    verbose=True,
+
+def sarimax_time_series_cv(
+    df, target, p, d, q, P, D, Q, s,
+    train_years=9, forecast_months=12,
+    test_start_year=2010, exog=None,
+    *, verbose=True, alpha=0.05,
 ):
     """
-    Rolling-window cross-validation for SARIMAX.
-
-    - Uses a fixed-size rolling train window (train_size).
-    - Forecasts 'forecast_window' steps ahead.
-    - Moves the window by 'step' time steps each fold.
-    - Returns only error metrics across folds.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Full dataframe containing target (and exogenous vars if any).
-    target : str
-        Name of the target column in df.
-    order : tuple
-        (p, d, q) for SARIMAX.
-    seasonal_order : tuple
-        (P, D, Q, s) for SARIMAX.
-    forecast_window : int
-        Number of steps to forecast in each fold (h).
-    train_size : int
-        Number of time steps to use for training in each fold (must be > 0).
-    step : int or None
-        Jump between fold starts (in time steps). If None, defaults to forecast_window.
-    exog : list[str] or None
-        List of exogenous column names in df, or None.
-    verbose : bool
-        Print fold-by-fold metrics.
-
-    Returns
-    -------
-    dict
-        {
-          "rmse_mean": float,
-          "mse_mean": float,
-          "mae_mean": float,
-          "rmse_folds": list[float],
-          "mse_folds": list[float],
-          "mae_folds": list[float],
-          "n_folds": int,
-        }
+    Perform time series cross-validation for SARIMAX models.
+    Returns a dict with fold metrics + concatenated predictions
+    + per-fold artifacts (y_true/y_pred/resid/conf_int) for plotting.
     """
-    y = df[target]
-    n = len(y)
-    h = forecast_window
 
-    if train_size is None or train_size <= 0:
-        raise ValueError("You must provide a positive train_size (number of time steps).")
+    df = df.copy()
+    df = df.sort_index()
 
-    if step is None:
-        step = h  # default: jump one forecast window each time
-
-    if step <= 0:
-        raise ValueError("step must be > 0")
-
-    max_train_start = n - train_size - h
-    if max_train_start < 0:
-        raise ValueError(
-            f"Not enough data: need at least train_size + forecast_window = "
-            f"{train_size + h} points, but only have n = {n}."
-        )
-
-    n_folds = max_train_start // step + 1
-    print(f"Running rolling CV with {n_folds} folds...")
-    if verbose:
-        print(f"Total length: {n}")
-        print(f"Train window size: {train_size}")
-        print(f"Forecast window: {h}")
-        print(f"Step between folds: {step}")
-        print(f"Number of folds (computed): {n_folds}")
-
-    rmse_folds, mse_folds, mae_folds = [], [], []
-
-    for fold in range(n_folds):
-        train_start = fold * step
-        train_end = train_start + train_size
-        test_start = train_end
-        test_end = test_start + h
-
-        train = y.iloc[train_start:train_end]
-        test = y.iloc[test_start:test_end]
-
-        if exog is not None:
-            exog_train = df[exog].iloc[train_start:train_end]
-            exog_test = df[exog].iloc[test_start:test_end]
+    # --- Build exog matrix aligned to df.index (supports multiple input types) ---
+    exog_mat = None
+    if exog is not None:
+        if isinstance(exog, (pd.Series, pd.DataFrame)):
+            exog_mat = exog.copy().sort_index().reindex(df.index)
         else:
-            exog_train = exog_test = None
+            exog_mat = df[exog].copy()
 
-        model = SARIMAX(
-            train,
-            exog=exog_train,
-            order=order,
-            seasonal_order=seasonal_order,
-            enforce_stationarity=False,
-            enforce_invertibility=False,
-        )
-        results = model.fit(disp=False)
+    train_months = train_years * 12
 
-        fc = results.forecast(steps=h, exog=exog_test)
-        fc = pd.Series(fc, index=test.index)
-
-        mse = mean_squared_error(test, fc)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(test, fc)
-
-        rmse_folds.append(rmse)
-        mse_folds.append(mse)
-        mae_folds.append(mae)
-
+    test_start_pos = df.index.get_indexer_for(df.index[df.index.year >= test_start_year])
+    if len(test_start_pos) == 0:
         if verbose:
-            print(
-                f"Fold {fold+1}/{n_folds}: "
-                f"RMSE={rmse:.4f}, MSE={mse:.4f}, MAE={mae:.4f}"
-            )
+            print("No test data at/after test_start_year.")
+        return {
+            "split_metrics": [],
+            "overall_rmse": np.inf, "overall_mae": np.inf,
+            "avg_rmse": np.inf, "avg_mae": np.inf,
+            "forecasts": [], "actuals": [],
+            "train_months": train_months, "forecast_months": forecast_months,
+            "residuals": [], "lb_results": [],
+            "folds": [],  # NEW
+        }
 
-    rmse_mean = float(np.mean(rmse_folds))
-    mse_mean = float(np.mean(mse_folds))
-    mae_mean = float(np.mean(mae_folds))
+    test_start_idx = test_start_pos[0]
+
+    # --- Determine splits safely: only create folds where full horizon fits ---
+    n = len(df)
+    n_splits = 0
+    while True:
+        train_start_idx = test_start_idx + n_splits * forecast_months
+        train_end_idx = train_start_idx + train_months
+        test_end_idx = train_end_idx + forecast_months
+        if test_end_idx <= n:
+            n_splits += 1
+        else:
+            break
 
     if verbose:
-        print("\nRolling CV summary:")
-        print(f"Mean RMSE: {rmse_mean:.4f}")
-        print(f"Mean MSE:  {mse_mean:.4f}")
-        print(f"Mean MAE:  {mae_mean:.4f}")
+        print(f"Data range: {df.index.min()} to {df.index.max()}")
+        print(f"Training window: {train_years} years ({train_months} months)")
+        print(f"Forecast horizon: {forecast_months} months")
+        print(f"Testing period: {test_start_year} onwards")
+        print(f"Number of CV splits: {n_splits}\n")
+
+    all_forecasts = []
+    all_actuals = []
+    all_residuals = []
+    lb_results = []
+    split_metrics = []
+    folds = []  # NEW
+
+    for split_idx in range(n_splits):
+        train_start_idx = test_start_idx + split_idx * forecast_months
+        train_end_idx   = train_start_idx + train_months
+        test_end_idx    = train_end_idx + forecast_months
+
+        y_train = df[target].iloc[train_start_idx:train_end_idx]
+        y_test  = df[target].iloc[train_end_idx:test_end_idx]
+
+        X_train = X_test = None
+        if exog_mat is not None:
+            X_train = exog_mat.iloc[train_start_idx:train_end_idx]
+            X_test  = exog_mat.iloc[train_end_idx:test_end_idx]
+
+            if len(X_train) != len(y_train) or len(X_test) != len(y_test):
+                if verbose:
+                    print(
+                        f"Split {split_idx+1} failed: exog length mismatch "
+                        f"(train {len(X_train)} vs {len(y_train)}, test {len(X_test)} vs {len(y_test)})"
+                    )
+                continue
+
+            if np.any(pd.isna(X_train).to_numpy()) or np.any(pd.isna(X_test).to_numpy()):
+                if verbose:
+                    print(f"Split {split_idx+1} failed: NaNs in exog within fold window.")
+                continue
+
+        try:
+            model = SARIMAX(
+                y_train,
+                exog=X_train,
+                order=(p, d, q),
+                seasonal_order=(P, D, Q, s),
+                enforce_stationarity=False,
+                enforce_invertibility=False,
+            )
+            results = model.fit(disp=False)
+
+            fcst = results.get_forecast(steps=len(y_test), exog=X_test)
+            y_hat = fcst.predicted_mean
+            y_hat.index = y_test.index  # ensure alignment
+
+            # optional confidence intervals for plotting
+            conf_int = fcst.conf_int(alpha=alpha)
+            conf_int.index = y_test.index  # align to test index
+
+            rmse = float(np.sqrt(mean_squared_error(y_test, y_hat)))
+            mae  = float(mean_absolute_error(y_test, y_hat))
+
+            # residuals as Series (keeps dates!)
+            resid_s = (y_test - y_hat)
+
+            # Ljung-Box on residual values
+            residuals_np = resid_s.to_numpy()
+            max_lag = len(residuals_np) - 1
+            if max_lag >= 1:
+                lag = min(12, max_lag)
+                lb = acorr_ljungbox(residuals_np, lags=[lag], return_df=True)
+                lb_results.append({
+                    "ds": y_test.index[-1],
+                    "lb_stat": float(lb["lb_stat"].iloc[0]),
+                    "p_value": float(lb["lb_pvalue"].iloc[0]),
+                    "lag": int(lag),
+                })
+            else:
+                lb_results.append({
+                    "ds": y_test.index[-1],
+                    "lb_stat": np.nan,
+                    "p_value": np.nan,
+                    "lag": 0,
+                })
+
+            # concatenated storage
+            all_forecasts.extend(y_hat.to_numpy())
+            all_actuals.extend(y_test.to_numpy())
+            all_residuals.extend(resid_s.to_numpy().tolist())
+
+            split_metrics.append({
+                "split": split_idx + 1,
+                "train_end": y_train.index[-1],
+                "test_start": y_test.index[0],
+                "test_end": y_test.index[-1],
+                "rmse": rmse,
+                "mae": mae,
+                "n_test": len(y_test),
+            })
+
+            # NEW: per-fold artifacts for plotting later
+            folds.append({
+                "split": split_idx + 1,
+                "train_start": y_train.index[0],
+                "train_end": y_train.index[-1],
+                "test_start": y_test.index[0],
+                "test_end": y_test.index[-1],
+                "y_true": y_test.copy(),
+                "y_pred": y_hat.copy(),
+                "resid": resid_s.copy(),
+                "conf_int": conf_int.copy(),
+                # optionally:
+                # "model_results": results,
+            })
+
+            if verbose:
+                print(
+                    f"Split {split_idx + 1}/{n_splits} - "
+                    f"Train: {y_train.index[0].strftime('%Y-%m')} to {y_train.index[-1].strftime('%Y-%m')}, "
+                    f"Test: {y_test.index[0].strftime('%Y-%m')} to {y_test.index[-1].strftime('%Y-%m')} - "
+                    f"RMSE: {rmse:.4f}, MAE: {mae:.4f}"
+                )
+
+        except Exception as e:
+            if verbose:
+                print(f"Split {split_idx + 1} failed: {e}")
+            continue
+
+    # Metrics
+    if len(all_actuals) == 0:
+        overall_rmse = overall_mae = avg_rmse = avg_mae = np.inf
+        std_rmse = std_mae = np.inf
+    else:
+        overall_rmse = float(np.sqrt(mean_squared_error(all_actuals, all_forecasts)))
+        overall_mae  = float(mean_absolute_error(all_actuals, all_forecasts))
+        rmse_vals = np.array([m["rmse"] for m in split_metrics])
+        mae_vals  = np.array([m["mae"]  for m in split_metrics])
+        avg_rmse = float(rmse_vals.mean())
+        avg_mae  = float(mae_vals.mean())
+        std_rmse = float(rmse_vals.std(ddof=0))
+        std_mae  = float(mae_vals.std(ddof=0))
+
+    if verbose:
+        print(f"\n{'='*70}")
+        print("OVERALL METRICS (concatenated predictions):")
+        print(f"RMSE: {overall_rmse:.4f}")
+        print(f"MAE: {overall_mae:.4f}")
+        print("\nAVERAGE METRICS (across splits):")
+        print(f"Average RMSE: {avg_rmse:.4f}")
+        print(f"Average MAE: {avg_mae:.4f}")
+        print(f"Standard Deviation RMSE: {std_rmse:.4f}")
+        print(f"Standard Deviation MAE: {std_mae:.4f}")
+        print(f"{'='*70}\n")
 
     return {
-        "rmse_mean": rmse_mean,
-        "mse_mean": mse_mean,
-        "mae_mean": mae_mean,
-        "rmse_folds": rmse_folds,
-        "mse_folds": mse_folds,
-        "mae_folds": mae_folds,
-        "n_folds": n_folds,
+        "split_metrics": split_metrics,
+        "overall_rmse": overall_rmse,
+        "overall_mae": overall_mae,
+        "avg_rmse": avg_rmse,
+        "avg_mae": avg_mae,
+        "std_rmse": std_rmse,
+        "std_mae": std_mae,
+        "forecasts": all_forecasts,
+        "actuals": all_actuals,
+        "train_months": train_months,
+        "forecast_months": forecast_months,
+        "residuals": all_residuals,
+        "lb_results": lb_results,
+        "folds": folds,  # NEW
     }
+
+
+import numpy as np
+import pandas as pd
 
 def select_best_sarima_cv(
     df,
     target,
     candidates,
-    forecast_window,
-    train_size,
-    step,
+    train_years=8,
+    forecast_months=24,
+    test_start_year=1995,
     exog=None,
-    metric="rmse",   # "rmse" or "mae"
+    metric="rmse",
+    use="avg",
     verbose=True,
+    alpha=0.05,
+    folds_key_candidates=("folds", "fold_results", "cv_folds"),  # supports different names
 ):
     """
-    Evaluate a list of SARIMA candidates via rolling CV and pick the best.
+    Select best SARIMA/SARIMAX by time-series CV, and return:
+      - best_info: includes best params + metrics + last_fold artifacts (y_true/y_pred/resid/ci/...)
+      - scores_df: table of candidate scores
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-    target : str
-    candidates : list[tuple]
-        Each tuple is (p, d, q, P, D, Q, s).
-    forecast_window : int
-    train_size : int
-    step : int
-    exog : list[str] or None
-    metric : str
-        "rmse" or "mae" – which mean metric to minimize.
-    verbose : bool
-
-    Returns
-    -------
-    best_info : dict
-        {
-          "order": (p,d,q),
-          "seasonal_order": (P,D,Q,s),
-          "metric": metric,
-          "score": best_score,
-          "rmse_mean": float,
-          "mae_mean": float,
-          "cv_results": dict,  # full output of sarimax_rolling_cv for best model
-        }
-    scores_df : pd.DataFrame
-        One row per candidate with mean RMSE/MAE etc.
+    REQUIREMENT (to get last_fold):
+      sarimax_time_series_cv must return per-fold artifacts under one of folds_key_candidates,
+      e.g. cv["folds"] = [ { "y_true":..., "y_pred":..., "resid":..., ... }, ... ]
     """
     assert metric in {"rmse", "mae"}
+    assert use in {"avg", "overall"}
     metric_key = f"{metric}_mean"
 
     records = []
-    best_info = None
+    best_params = None
     best_score = np.inf
 
+    # PASS 1: score all candidates
     for i, (p, d, q, P, D, Q, s) in enumerate(candidates, 1):
-        cv_results = sarimax_rolling_cv(
-            df=df,
-            target=target,
-            order=(p, d, q),
-            seasonal_order=(P, D, Q, s),
-            forecast_window=forecast_window,
-            train_size=train_size,
-            step=step,
-            exog=exog,
-            verbose=False,
-        )
+        try:
+            cv = sarimax_time_series_cv(
+                df=df, target=target,
+                p=p, d=d, q=q, P=P, D=D, Q=Q, s=s,
+                train_years=train_years,
+                forecast_months=forecast_months,
+                test_start_year=test_start_year,
+                exog=exog,
+                alpha=alpha,
+                verbose=True,
+            )
+        except Exception as e:
+            if verbose:
+                print(f"{i:02d}. SARIMA({p},{d},{q})({P},{D},{Q},{s}) failed: {e}")
+            continue
 
-        rmse_mean = cv_results["rmse_mean"]
-        mae_mean = cv_results["mae_mean"]
-        score = cv_results[metric_key]
+        avg_rmse     = cv.get("avg_rmse", np.inf)
+        avg_mae      = cv.get("avg_mae", np.inf)
+        std_rmse     = cv.get("std_rmse", np.inf)
+        std_mae      = cv.get("std_mae", np.inf)
+        overall_rmse = cv.get("overall_rmse", np.inf)
+        overall_mae  = cv.get("overall_mae", np.inf)
+
+        rmse_mean, mae_mean = (avg_rmse, avg_mae) if use == "avg" else (overall_rmse, overall_mae)
+        score = rmse_mean if metric == "rmse" else mae_mean
 
         records.append({
             "p": p, "d": d, "q": q,
             "P": P, "D": D, "Q": Q, "s": s,
             "rmse_mean": rmse_mean,
             "mae_mean": mae_mean,
+            "avg_rmse": avg_rmse,
+            "avg_mae": avg_mae,
+            "std_rmse": std_rmse,
+            "std_mae": std_mae,
+            "overall_rmse": overall_rmse,
+            "overall_mae": overall_mae,
         })
 
-        if verbose:
-            print(
-                f"{i:02d}. SARIMA({p},{d},{q})({P},{D},{Q},{s}) "
-                f"- mean RMSE={rmse_mean:.4f}, mean MAE={mae_mean:.4f}"
-            )
-
-        if score < best_score:
+        if np.isfinite(score) and score < best_score:
             best_score = score
-            best_info = {
-                "order": (p, d, q),
-                "seasonal_order": (P, D, Q, s),
-                "metric": metric,
-                "score": score,
-                "rmse_mean": rmse_mean,
-                "mae_mean": mae_mean,
-                "cv_results": cv_results,
-            }
+            best_params = (p, d, q, P, D, Q, s)
+
+    if not records or best_params is None:
+        return None, pd.DataFrame()
 
     scores_df = pd.DataFrame(records).sort_values(by=metric_key, ascending=True)
 
-    if verbose and best_info is not None:
-        print("\n=== BEST BY ROLLING CV ===")
-        print("Metric:", metric)
+    # PASS 2: rerun best candidate (so we can keep folds for plotting)
+    p, d, q, P, D, Q, s = best_params
+    best_cv = sarimax_time_series_cv(
+        df=df, target=target,
+        p=p, d=d, q=q, P=P, D=D, Q=Q, s=s,
+        train_years=train_years,
+        forecast_months=forecast_months,
+        test_start_year=test_start_year,
+        exog=exog,
+        alpha=alpha,
+        verbose=False,
+    )
+
+    avg_rmse     = best_cv.get("avg_rmse", np.inf)
+    avg_mae      = best_cv.get("avg_mae", np.inf)
+    std_rmse     = best_cv.get("std_rmse", np.inf)
+    std_mae      = best_cv.get("std_mae", np.inf)
+    overall_rmse = best_cv.get("overall_rmse", np.inf)
+    overall_mae  = best_cv.get("overall_mae", np.inf)
+
+    rmse_mean, mae_mean = (avg_rmse, avg_mae) if use == "avg" else (overall_rmse, overall_mae)
+    score = rmse_mean if metric == "rmse" else mae_mean
+
+    # --- grab folds + last fold (if available)
+    folds = None
+    for k in folds_key_candidates:
+        if k in best_cv and isinstance(best_cv[k], (list, tuple)) and len(best_cv[k]) > 0:
+            folds = best_cv[k]
+            break
+
+    last_fold = folds[-1] if folds else None
+    overall_std = np.nan
+    if "residuals" in best_cv and len(best_cv["residuals"]) > 0:
+        overall_std = float(np.std(best_cv["residuals"], ddof=0))
+
+    # --- last fold RMSE
+    last_fold_rmse = np.nan
+    if last_fold is not None:
+        last_fold_rmse = float(
+        np.sqrt(mean_squared_error(last_fold["y_true"], last_fold["y_pred"]))
+        )
+    best_info = {
+        "order": (p, d, q),
+        "seasonal_order": (P, D, Q, s),
+        "metric": metric,
+        "use": use,
+        "score": score,
+
+        # selection view
+        "rmse_mean": rmse_mean,
+        "mae_mean": mae_mean,
+
+        # keep these
+        "avg_rmse": avg_rmse,
+        "avg_mae": avg_mae,
+        "std_rmse": std_rmse,
+        "std_mae": std_mae,
+        "overall_rmse": overall_rmse,
+        "overall_mae": overall_mae,
+
+        "overall_std": overall_std,
+        "last_fold_rmse": last_fold_rmse,
+
+        # raw CV result dict
+        "cv_results": best_cv,
+
+        # if your CV returns this already
+        "split_metrics": best_cv.get("split_metrics", []),
+
+        # NEW: fold artifacts for plotting
+        "folds": folds,               # may be None if CV doesn't provide them
+        "last_fold": last_fold,       # dict: y_true/y_pred/resid/conf_int/...
+    }
+
+    if verbose:
+        print("\n=== BEST BY TIME-SERIES CV ===")
+        print("Selection metric:", metric, f"({use})")
         print("Best order:       ", best_info["order"])
         print("Best seasonal:    ", best_info["seasonal_order"])
-        print("Best mean RMSE:   ", best_info["rmse_mean"])
-        print("Best mean MAE:    ", best_info["mae_mean"])
+        print("Best score:       ", best_info["score"])
+
+        print("\n--- Average across folds ---")
+        print("Avg RMSE:         ", best_info["avg_rmse"])
+        print("Std RMSE:         ", best_info["std_rmse"])
+        print("Avg MAE:          ", best_info["avg_mae"])
+        print("Std MAE:          ", best_info["std_mae"])
+
+        print("\n--- Overall (concatenated) ---")
+        print("Overall RMSE:     ", best_info["overall_rmse"])
+        print("Overall MAE:      ", best_info["overall_mae"])
+        print("Overall STD:      ", best_info["overall_std"])
+        print("Last fold RMSE:   ", best_info["last_fold_rmse"])
+    if best_info["last_fold"] is None:
+        print("NOTE: No per-fold artifacts found (add cv['folds'] in sarimax_time_series_cv).")
+    else:
+        lf = best_info["last_fold"]
+        if "test_start" in lf and "test_end" in lf:
+            print("Last fold test:   ", lf["test_start"], "→", lf["test_end"])
 
     return best_info, scores_df
+
+
+
+
 
 
 class LSTM(nn.Module):
