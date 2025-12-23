@@ -1342,7 +1342,7 @@ def lstm_grid_search_cv(
     
     if verbose >= 1:
         print_grid_search_results(results_df, best_overall_score, best_overall_results, best_overall_params, best_avg_score, best_avg_results, best_avg_params, best_last_fold_score, best_last_fold_results, best_last_fold_params)
-    
+
     return {
         'results': results_df,
         'best_overall_params': best_overall_params,
